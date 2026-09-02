@@ -5,7 +5,7 @@ describe('buildNotifyRegistry', () => {
   it('registers the expected provider set', () => {
     const r = buildNotifyRegistry();
     const names = r.list().map((p) => p.name);
-    expect(names).toEqual(['slack', 'telegram', 'webhook']);
+    expect(names).toEqual(['slack', 'telegram', 'webhook', 'discord', 'pushover']);
   });
 
   it('returns a fresh registry on each call', () => {
