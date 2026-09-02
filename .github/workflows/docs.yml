@@ -1,0 +1,65 @@
+name: docs
+
+on:
+  pull_request:
+    paths:
+      - docs/**
+      - mkdocs.yml
+      - .github/workflows/docs.yml
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GitHub Pages deploy — uses the built-in GITHUB_TOKEN; no PAT.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  # deploy-pages reads the run's artifact via the Actions API; upstream
+  # documents this as required from v4 on.
+  actions: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # mkdocs-git-revision-date needs full history
+
+      # Pinned to a full version: astral-sh/setup-uv stopped publishing the
+      # moving `vN` major tag after v7, so no `@vN` major tag resolves.
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - run: uv sync --group docs
+
+      - name: Build site
+        run: uv run mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/
+
+  deploy:
+    name: deploy
+    needs: build
+    # Mirrors the github-pages environment's deployment branch policy, which
+    # admits main only. Without this the job still starts on a docs/** pull
+    # request and GitHub rejects it at the environment gate — a red check with
+    # no failing step and no log, because nothing ran. Pull requests keep the
+    # build job, which is the part that validates `mkdocs build --strict`.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@v5

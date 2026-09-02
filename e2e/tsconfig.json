@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    // Specs run in Node, but `page.evaluate` callbacks are serialised and run in
+    // the browser, so their bodies need the DOM lib to typecheck at all.
+    "lib": ["ES2024", "DOM"],
+    "types": ["bun"]
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["dist", "node_modules", "vitest.config.ts"]
+}

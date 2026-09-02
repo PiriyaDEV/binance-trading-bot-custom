@@ -1,0 +1,31 @@
+{
+  "editor.insertSpaces": true,
+  "editor.formatOnSave": true,
+  "editor.tabSize": 2,
+  "files.trimTrailingWhitespace": true,
+  "files.exclude": {},
+  "files.insertFinalNewline": true,
+  "search.exclude": {
+    ".git": true,
+    ".build": true,
+    "**/.DS_Store": true,
+    "**/.vscode": true,
+    "**/coverage": true,
+    "**/node_modules": true
+  },
+  "cSpell.words": [
+    "bullmq",
+    "chrisleekr",
+    "ciphertext",
+    "DBURL",
+    "libsodium",
+    "mkdocs",
+    "oxlint",
+    "redlock",
+    "technicals",
+    "TOTP",
+    "Turborepo",
+    "uvicorn",
+    "venv"
+  ]
+}

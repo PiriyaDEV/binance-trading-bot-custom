@@ -1,0 +1,132 @@
+name: release-please
+
+on:
+  push:
+    branches: [main, beta]
+  workflow_dispatch:
+
+# release-please opens a release PR. When that PR merges, `publish` builds and
+# pushes the multi-arch image to Docker Hub at chrisleekr/binance-trading-bot.
+#
+# Release and publish are separate jobs so the push is independently
+# re-runnable. release-please reports release_created only on the run that
+# actually creates the release, so a single job could never retry a failed
+# push: the re-run would see release_created=false and skip every push step,
+# stranding a tagged release with no image. Split, "Re-run failed jobs" leaves
+# the succeeded release job alone and replays only publish, which reads the
+# preserved job outputs.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOCKERHUB_IMAGE: chrisleekr/binance-trading-bot
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # main uses the stable config (production tags vX.Y.Z); beta uses
+      # the beta config (prerelease vX.Y.Z-beta.N). Both share the same
+      # manifest so a single root version line moves with each branch.
+      - id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target-branch: ${{ github.ref_name }}
+          manifest-file: .release-please-manifest.json
+          config-file: ${{ github.ref_name == 'main' && '.release-please-config.json' || '.release-please-config-beta.json' }}
+
+  publish:
+    name: publish
+    needs: release
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      # Build the tag release-please just cut, not the branch head. A commit
+      # landing while this job queues would otherwise ship as vX.Y.Z.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.tag_name }}
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # --tag-latest moves :latest only on main. Beta releases keep
+      # their immutable :vX.Y.Z-beta.N tag and never overwrite :latest.
+      - name: Build + push images
+        env:
+          TAG_VERSION: ${{ needs.release.outputs.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # Stamp the git short SHA so the status bar shows it, not "unknown"
+          # (the alpine runtime carries no git). docker-build.sh forwards it as
+          # a --build-arg. Read from HEAD because this job checks out the tag,
+          # not the pushed commit.
+          export GIT_SHA="$(git rev-parse --short=7 HEAD)"
+          tag_latest=()
+          if [[ "$REF_NAME" == "main" ]]; then
+            tag_latest+=(--tag-latest)
+          fi
+          bash scripts/ci/docker-build.sh \
+            --push \
+            --single-repo \
+            --registry "$DOCKERHUB_IMAGE" \
+            --platforms linux/amd64,linux/arm64 \
+            --tag-version "$TAG_VERSION" \
+            "${tag_latest[@]}"
+
+  sync-chart:
+    name: sync-chart
+    # The chart's appVersion becomes an image tag, so the dispatch must not fire
+    # until that image is pushed. A failed image build therefore also suppresses
+    # the sync (no chart PR pointing at a tag that does not exist).
+    needs: [release, publish]
+    # Stable channel only: beta prereleases do not sync the chart (the chart
+    # tracks stable v<x.y.z>). Fires only when this push actually cut a release.
+    if: ${{ needs.release.outputs.release_created == 'true' && github.ref_name == 'main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # No GITHUB_TOKEN scopes: the cross-repo dispatch is authenticated with
+    # RELEASE_TOKEN (a PAT), the only credential that can reach another repo.
+    permissions: {}
+    steps:
+      - name: Dispatch chart sync to helm-charts
+        # repository_dispatch into chrisleekr/helm-charts wakes its
+        # binance-trading-bot-sync workflow (which opens the chart bump PR). The
+        # version is passed in client_payload so the sync targets this exact
+        # release rather than re-resolving releases/latest. A 403 here fails this
+        # job loudly (the release + image push already completed and are
+        # unaffected). NOTE: a dispatch only runs a workflow present on
+        # helm-charts' DEFAULT branch, and the POST returns 204 even when nothing
+        # listens, so a dropped delivery is silent. The receiver change must
+        # already be on helm-charts main; confirm a run appears in its Actions.
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          gh api -X POST repos/chrisleekr/helm-charts/dispatches \
+            -f event_type=binance-trading-bot-released \
+            -f "client_payload[version]=$ver"
+          echo "dispatched binance-trading-bot-released version=$ver to chrisleekr/helm-charts"
