@@ -1,0 +1,50 @@
+// Per-profile wallet readout for the scoped overview. Balances are reference
+// info the operator wants at a glance, so they live in the main panel (this used
+// to be the BALANCES dock). Single-profile only — the parent gates it; in 'all'
+// scope it is not rendered.
+
+import { useQuery } from '@tanstack/react-query';
+
+import { TableSkeleton } from '@/shared/components/page-skeleton';
+import { Card } from '@/shared/components/ui/card';
+import { t } from '@/shared/lib/i18n';
+import {
+  fetchProfileDashboard,
+  profileDashboardQueryKey,
+} from '@/features/profile/api/profile-dashboard';
+import { AccountBalancesPanel } from '@/features/profile/components/account-balances-panel';
+
+export function ScopedBalances({ profileId }: { readonly profileId: string }): React.JSX.Element {
+  const dashboard = useQuery({
+    queryKey: profileDashboardQueryKey(profileId),
+    queryFn: () => fetchProfileDashboard(profileId),
+  });
+
+  return (
+    // No section heading here: AccountBalancesPanel already titles itself
+    // "Balances" (with the est-value readout), so an outer label would just
+    // repeat it.
+    <section aria-label={t('home.balances.title')} data-testid="scoped-balances">
+      {dashboard.isError ? (
+        // A failed read must not sit on "Loading…" forever — surface it.
+        <p className="text-sm text-danger" data-testid="scoped-balances-error">
+          {t('home.balances.error')}
+        </p>
+      ) : dashboard.data ? (
+        <Card>
+          <AccountBalancesPanel
+            balances={dashboard.data.balances}
+            symbols={dashboard.data.symbols}
+            quoteAsset={dashboard.data.quoteAsset}
+          />
+        </Card>
+      ) : (
+        <Card>
+          {/* AccountBalancesPanel is a titled list of held assets; a page-worth
+              of rows is what the operator is waiting on. */}
+          <TableSkeleton rows={6} />
+        </Card>
+      )}
+    </section>
+  );
+}
