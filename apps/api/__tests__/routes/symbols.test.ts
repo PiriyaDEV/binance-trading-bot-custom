@@ -1,0 +1,1011 @@
+import { randomUUID } from 'node:crypto';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { accountPermissionsKey, GLOBAL_KEYS, profileKey } from '@app/db';
+import { HAS_INFRA, setupApp, type ApiFixture } from '../_helpers.js';
+import { OPENAPI_DOC } from '../../src/routes/docs.js';
+
+/**
+ * Integration coverage for the per-symbol config-override surface: an
+ * override must be validated against the profile's strategy before it is
+ * stored, a null override must reset the symbol to the inherited profile
+ * config, and every route must stay account-scoped. Integration-level
+ * because the validation depends on a real strategy registry and the
+ * override is persisted through the scoped repo.
+ */
+const describeIfInfra = HAS_INFRA ? describe : describe.skip;
+
+const headers = (userId: string): Record<string, string> => ({
+  'x-test-user-id': userId,
+  'content-type': 'application/json',
+});
+
+// `Response#json()` is `unknown`, so the error wire shape is named once here rather than re-asserted at every read below.
+interface ErrorBody {
+  error: { code: string; message: string };
+}
+const errorBody = async (res: Response): Promise<ErrorBody> => (await res.json()) as ErrorBody;
+
+describeIfInfra('symbols router — per-symbol config override', () => {
+  let fx: ApiFixture;
+
+  beforeAll(async () => {
+    fx = await setupApp();
+    // Seed the exchangeInfo cache the add-symbol existence check reads, so the
+    // attach below validates offline (no live Binance fetch) and a fake pair
+    // can be asserted as rejected (#365). BTCUSDT and ETHUSDT are TRADING.
+    await fx.di.redis.raw().set(
+      'exchange-info:cache',
+      JSON.stringify({
+        symbols: [
+          {
+            symbol: 'BTCUSDT',
+            baseAsset: 'BTC',
+            quoteAsset: 'USDT',
+            status: 'TRADING',
+            filterTickSize: '0.01',
+          },
+          {
+            symbol: 'ETHUSDT',
+            baseAsset: 'ETH',
+            quoteAsset: 'USDT',
+            status: 'TRADING',
+            filterTickSize: '0.01',
+          },
+        ],
+        fetchedAt: '2026-05-31T00:00:00.000Z',
+      }),
+    );
+    // Attach BTCUSDT to Alice's profile so the override routes have a row.
+    await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'BTCUSDT' }),
+      },
+    );
+    // Seed a valid profile config so the merged effective config validates.
+    await fx.di.pool.query(`update profiles set config = $2::jsonb where id = $1`, [
+      fx.alice.profileId,
+      JSON.stringify({
+        symbol: 'BTCUSDT',
+        candleInterval: '1h',
+        buy: { enabled: true, maxPurchaseAmount: '10', avgEntryPriceRemoveThreshold: '0' },
+        sell: { enabled: true, stopLossPercentage: '0.97', triggerPercentage: '1.05' },
+      }),
+    ]);
+  });
+
+  // The base-asset exclusivity cases below add sibling profiles under Alice's
+  // account. Left behind, a sibling keeps owning BTC and every later case that
+  // binds BTCUSDT to Alice's primary profile 409s. `profile_symbols` cascades on
+  // profile delete, so dropping the sibling row is enough.
+  afterEach(async () => {
+    await fx.di.pool.query(`delete from profiles where account_id = $1 and id <> $2`, [
+      fx.alice.accountId,
+      fx.alice.profileId,
+    ]);
+  });
+
+  afterAll(async () => {
+    await fx.cleanup();
+  });
+
+  it('rejects adding a pair that is not listed/TRADING on Binance with 422 (#365)', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'ZZZFAKEUSDT' }),
+      },
+    );
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects binding a live-account symbol whose Binance permission sets the key pair cannot satisfy', async () => {
+    // TRADING is not tradable BY THIS ACCOUNT. Bound anyway, every tick
+    // re-derives the entry order and Binance refuses it -2010 forever, burning
+    // the account's whole request-weight budget. Reject at the bind instead.
+    const redis = fx.di.redis.raw();
+    const cachedExchangeInfo = await redis.get('exchange-info:cache');
+    const permissionsKey = accountPermissionsKey(fx.alice.accountId);
+    try {
+      await redis.set(
+        'exchange-info:cache',
+        JSON.stringify({
+          symbols: [
+            {
+              symbol: 'BTCUSDT',
+              baseAsset: 'BTC',
+              quoteAsset: 'USDT',
+              status: 'TRADING',
+              filterTickSize: '0.01',
+              permissionSets: [['SPOT', 'TRD_GRP_005']],
+            },
+          ],
+          fetchedAt: '2026-05-31T00:00:00.000Z',
+        }),
+      );
+      await fx.di.pool.query(`update accounts set binance_mode = 'live' where id = $1`, [
+        fx.alice.accountId,
+      ]);
+      await redis.set(permissionsKey, JSON.stringify(['LEVERAGED', 'TRD_GRP_025']));
+
+      const denied = await fx.app.request(
+        `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+        {
+          method: 'POST',
+          headers: headers(fx.alice.userId),
+          body: JSON.stringify({ symbol: 'BTCUSDT' }),
+        },
+      );
+      expect(denied.status).toBe(422);
+      expect(JSON.stringify(await denied.json())).toContain('not permitted to trade');
+
+      // Unreadable permission cache must fail open: an absent signal is
+      // "unknown", never "forbidden", or a cold Redis blocks every bind.
+      await redis.del(permissionsKey);
+      const open = await fx.app.request(
+        `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+        {
+          method: 'POST',
+          headers: headers(fx.alice.userId),
+          body: JSON.stringify({ symbol: 'BTCUSDT' }),
+        },
+      );
+      expect(open.status).toBe(201);
+    } finally {
+      await redis.del(permissionsKey);
+      if (cachedExchangeInfo !== null) await redis.set('exchange-info:cache', cachedExchangeInfo);
+      await fx.di.pool.query(`update accounts set binance_mode = 'test' where id = $1`, [
+        fx.alice.accountId,
+      ]);
+    }
+  });
+
+  it('a failing permission-cache read fails open at the bind, it does not 500', async () => {
+    // An absent key already fails open. A FAILING get is the same signal — the
+    // check could not run — so it must degrade the same way. Unguarded, the
+    // ioredis error escapes as a 500, which turns a Redis blip into an operator
+    // who cannot bind anything.
+    const redis = fx.di.redis.raw();
+    const cachedExchangeInfo = await redis.get('exchange-info:cache');
+    const permissionsKey = accountPermissionsKey(fx.alice.accountId);
+    // The route and this test borrow the fixture-owned client through `raw()`, so inject the fault at that accessor seam. Only the permission key faults; exchangeInfo uses the same client, and breaking it too would prove nothing about this guard.
+    const faulty = new Proxy(redis, {
+      get(target, prop, receiver) {
+        if (prop === 'get') {
+          return async (key: string) =>
+            key === permissionsKey
+              ? Promise.reject(new Error('redis unreachable'))
+              : redis.get(key);
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const raw = vi.spyOn(fx.di.redis, 'raw').mockReturnValue(faulty);
+    try {
+      // Sets the account cannot satisfy, so a READABLE cache 422s here. Only the
+      // unreadable read can make this a 201.
+      await redis.set(
+        'exchange-info:cache',
+        JSON.stringify({
+          symbols: [
+            {
+              symbol: 'BTCUSDT',
+              baseAsset: 'BTC',
+              quoteAsset: 'USDT',
+              status: 'TRADING',
+              filterTickSize: '0.01',
+              permissionSets: [['TRD_GRP_005']],
+            },
+          ],
+          fetchedAt: '2026-05-31T00:00:00.000Z',
+        }),
+      );
+      await fx.di.pool.query(`update accounts set binance_mode = 'live' where id = $1`, [
+        fx.alice.accountId,
+      ]);
+      await redis.set(permissionsKey, JSON.stringify(['SPOT']));
+
+      const res = await fx.app.request(
+        `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+        {
+          method: 'POST',
+          headers: headers(fx.alice.userId),
+          body: JSON.stringify({ symbol: 'BTCUSDT' }),
+        },
+      );
+      expect(res.status).toBe(201);
+    } finally {
+      raw.mockRestore();
+      await redis.del(permissionsKey);
+      if (cachedExchangeInfo !== null) await redis.set('exchange-info:cache', cachedExchangeInfo);
+      await fx.di.pool.query(`update accounts set binance_mode = 'test' where id = $1`, [
+        fx.alice.accountId,
+      ]);
+    }
+  });
+
+  it('GET returns the single symbol row with a null override by default', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      symbol: 'BTCUSDT',
+      overrideConfig: null,
+      source: 'manual',
+      // The operator's own add, so both facts are set and the pin carries a real timestamp.
+      pinned: true,
+      pinnedAt: expect.any(String),
+    });
+  });
+
+  it('GET 404s for a symbol not attached to the profile', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT`,
+      {
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('PATCH stores a valid partial override', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        method: 'PATCH',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ overrideConfig: { buy: { maxPurchaseAmount: '25' } } }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { overrideConfig: { buy: { maxPurchaseAmount: string } } };
+    expect(body.overrideConfig.buy.maxPurchaseAmount).toBe('25');
+  });
+
+  it('PATCH rejects an override that fails the strategy schema with 422', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        method: 'PATCH',
+        headers: headers(fx.alice.userId),
+        // Must target a field the live schema still declares. `buy.maxPurchaseAmount` was removed in trailing-trade v2 and the `buy` sub-object is deliberately non-strict (a stale v1 override must still parse), so a bad value there is stripped rather than rejected. The 422 is schema-driven: `validateOverride` parses the override against `overrideConfigSchema`, then the override merged onto the profile config against `configSchema`, and raises VALIDATION_FAILED on either failure.
+        body: JSON.stringify({
+          overrideConfig: { buy: { avgEntryPriceRemoveThreshold: 'nope' } },
+        }),
+      },
+    );
+    expect(res.status).toBe(422);
+    // A bare 422 does not say which refusal fired: this handler also raises VALIDATION_FAILED for a strategy it cannot resolve and for a symbol Binance does not list, and either would satisfy a status-only assertion while proving nothing about the schema. Naming the rejected field is what separates the three.
+    const { error } = await errorBody(res);
+    expect(error.code).toBe('VALIDATION_FAILED');
+    expect(error.message).toContain('avgEntryPriceRemoveThreshold');
+  });
+
+  it('PATCH rejects an override carrying candleInterval with 422', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        method: 'PATCH',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ overrideConfig: { candleInterval: '5m' } }),
+      },
+    );
+    expect(res.status).toBe(422);
+    // Same reasoning as above: the field name is what proves the override schema refused a profile-level key, rather than one of the handler's other two VALIDATION_FAILED branches answering for it.
+    const { error } = await errorBody(res);
+    expect(error.code).toBe('VALIDATION_FAILED');
+    expect(error.message).toContain('candleInterval');
+  });
+
+  it('PATCH rejects a shape-valid override whose merged config fails a cross-field rule', async () => {
+    // Every field is individually valid; the ladder ordering is not. Level 0 must
+    // pin to 1 and every later level must sit below it, so a rising ladder trips
+    // the buy superRefine. This exercises validateOverride's second parse against
+    // configSchema. (The previous payload paired autoTriggerBuy with a grid ladder
+    // and asserted the superRefine forbids it — it does not; no such rule exists.)
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        method: 'PATCH',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({
+          overrideConfig: {
+            buy: {
+              gridLevels: [
+                { triggerPercentage: '1', maxPurchaseAmount: '10' },
+                { triggerPercentage: '1.2', maxPurchaseAmount: '10' },
+              ],
+            },
+          },
+        }),
+      },
+    );
+    expect(res.status).toBe(422);
+  });
+
+  it('PATCH with a null override resets to the inherited profile config', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        method: 'PATCH',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ overrideConfig: null }),
+      },
+    );
+    expect(res.status).toBe(200);
+    // An override edit says nothing about provenance or the pin, so neither moves.
+    expect((await res.json()) as { overrideConfig: unknown }).toEqual({
+      symbol: 'BTCUSDT',
+      overrideConfig: null,
+      source: 'manual',
+      pinned: true,
+      pinnedAt: expect.any(String),
+    });
+  });
+
+  it('PATCH that CREATES a binding pins it, and PATCH on an existing unpinned row leaves it rotatable', async () => {
+    const url = `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT`;
+    // The CREATE branch is the operator authoring a coin by writing an override to a symbol they had not bound. Left rotatable, discovery reaps the row and cascades the override, condition rows and strategy state away with it.
+    const created = await fx.app.request(url, {
+      method: 'PATCH',
+      headers: headers(fx.alice.userId),
+      body: JSON.stringify({ overrideConfig: { buy: { maxPurchaseAmount: '25' } } }),
+    });
+    expect(created.status).toBe(200);
+    expect((await created.json()) as { pinned: boolean }).toMatchObject({
+      source: 'manual',
+      pinned: true,
+    });
+
+    // Now the same row as discovery would have left it: rotated in, never pinned.
+    await fx.di.pool.query(
+      `update profile_symbols set source = 'auto', pinned = false, pinned_at = null
+         where profile_id = $1 and symbol = $2`,
+      [fx.alice.profileId, 'ETHUSDT'],
+    );
+    // Editing an override is not a pin and not an add, so neither fact may move — a re-pin here would silently exempt a discovery coin from rotation forever.
+    const edited = await fx.app.request(url, {
+      method: 'PATCH',
+      headers: headers(fx.alice.userId),
+      body: JSON.stringify({ overrideConfig: { buy: { maxPurchaseAmount: '30' } } }),
+    });
+    expect(edited.status).toBe(200);
+    expect((await edited.json()) as { pinned: boolean }).toMatchObject({
+      source: 'auto',
+      pinned: false,
+      pinnedAt: null,
+    });
+
+    // Later cases in this file assert ETHUSDT is unbound for Alice; the suite has no per-test reset for her own bindings.
+    await fx.di.pool.query(`delete from profile_symbols where profile_id = $1 and symbol = $2`, [
+      fx.alice.profileId,
+      'ETHUSDT',
+    ]);
+  });
+
+  it('POST attaches a symbol as source=manual AND pinned, with a real stamp', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'BTCUSDT' }),
+      },
+    );
+    expect(res.status).toBe(201);
+    // Written explicitly rather than left to the column default: the operator chose this coin, so it is both attributed to them and protected from the rotation, and the stamp records that the pin was deliberate.
+    const created = (await res.json()) as { source: string; pinned: boolean; pinnedAt: string };
+    expect(created).toMatchObject({ source: 'manual', pinned: true });
+    expect(created.pinnedAt).toEqual(expect.any(String));
+  });
+
+  it('Pin protects a discovery-rotated symbol WITHOUT claiming the operator added it', async () => {
+    // Simulate discovery having rotated BTCUSDT in, unpinned.
+    await fx.di.pool.query(
+      `update profile_symbols set source = 'auto', pinned = false, pinned_at = null
+         where profile_id = $1 and symbol = $2`,
+      [fx.alice.profileId, 'BTCUSDT'],
+    );
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT/pin`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(res.status).toBe(200);
+    const pinned = (await res.json()) as { source: string; pinned: boolean; pinnedAt: string };
+    expect(pinned).toMatchObject({ pinned: true, source: 'auto' });
+    expect(pinned.pinnedAt).toEqual(expect.any(String));
+    // Durable, and provenance still says discovery — the P/L-by-source band must keep crediting the trade to the scan that found the coin.
+    const after = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect((await after.json()) as { source: string }).toMatchObject({
+      pinned: true,
+      source: 'auto',
+    });
+  });
+
+  it('Pin 404s for a symbol not attached to the profile', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT/pin`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('Unpin releases the symbol to discovery and clears the stamp, leaving provenance alone', async () => {
+    // Start from an operator-added, pinned row so the assertion below can only be satisfied by the unpin itself.
+    await fx.di.pool.query(
+      `update profile_symbols set source = 'manual', pinned = true, pinned_at = now()
+         where profile_id = $1 and symbol = $2`,
+      [fx.alice.profileId, 'BTCUSDT'],
+    );
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT/unpin`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(res.status).toBe(200);
+    // The stamp goes with the pin so a later re-pin cannot inherit a stale date; `source` stays `manual` because the operator releasing a coin does not make discovery its author.
+    expect((await res.json()) as { source: string }).toMatchObject({
+      pinned: false,
+      pinnedAt: null,
+      source: 'manual',
+    });
+    const after = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect((await after.json()) as { source: string }).toMatchObject({
+      pinned: false,
+      source: 'manual',
+    });
+    // Restore the pin so later cases in this suite see the original row.
+    await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT/pin`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+      },
+    );
+  });
+
+  it('Unpin 404s for a symbol not attached to the profile', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT/unpin`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('no longer exposes the always-hold reserve route', async () => {
+    const base = `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`;
+    // Anchor the fixture first: the sibling GET on the same account/profile/symbol
+    // must be reachable, so a 404 below can only mean the route itself is gone and
+    // never a mistyped id or an unbound symbol.
+    const anchor = await fx.app.request(base, { headers: headers(fx.alice.userId) });
+    expect(anchor.status).toBe(200);
+
+    const res = await fx.app.request(`${base}/reserve`, {
+      method: 'PUT',
+      headers: headers(fx.alice.userId),
+      body: JSON.stringify({ reserveBaseQuantity: '1' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('no longer publishes the reserve path in the OpenAPI document', async () => {
+    // The route tests above prove the handler is gone; this pins the CONTRACT the generated client and the docs page are built from, which is a separate artifact and can outlive the handler.
+    //
+    // Generated from the fixture's own app rather than fetched over `/openapi.json`: `setupApp` mounts the routers but not the docs, and Hono refuses to add a route once its matcher is built, so a `mountDocs` call here throws. `app.doc()` is a `get` handler that returns exactly `getOpenAPIDocument(OPENAPI_DOC)`, so this is the same document the served path emits, from the same config object production passes.
+    const doc = fx.app.getOpenAPIDocument(OPENAPI_DOC) as { paths?: Record<string, unknown> };
+    const paths = Object.keys(doc.paths ?? {});
+    // Anchor first: a sibling symbols path must still be published, so an empty or
+    // renamed document cannot satisfy the assertion below vacuously.
+    expect(paths).toContain('/api/accounts/{accountId}/profiles/{profileId}/symbols/{symbol}/pin');
+    expect(paths.filter((path) => path.endsWith('/reserve'))).toEqual([]);
+  });
+
+  it('omits reserveBaseQuantity from the symbol response', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // Key presence, not value: a null-valued key still ships the removed field.
+    expect(Object.keys(body)).not.toContain('reserveBaseQuantity');
+  });
+
+  it('denies cross-account access to another user profile', async () => {
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+      {
+        headers: headers(fx.bob.userId),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects adding a symbol a sibling profile on the same account already manages (409)', async () => {
+    // A second profile under Alice (same user + binance_mode 'test' = same
+    // Binance account) already manages XRPUSDT. The exclusivity guard must stop
+    // Alice's primary profile from binding it too — two profiles cannot size
+    // sells / arm stops on one shared base-asset balance.
+    const sibling = randomUUID();
+    await fx.di.pool.query(
+      `insert into profiles (id, account_id, name, strategy_name, strategy_version, config, state)
+       values ($1, $2, 'sibling', 'trailing-trade', '1.0.0', '{}', '{}')`,
+      [sibling, fx.alice.accountId],
+    );
+    await fx.di.pool.query(
+      `insert into profile_symbols (profile_id, symbol, base_asset, source) values ($1, 'XRPUSDT', 'XRP', 'auto')`,
+      [sibling],
+    );
+    // Make XRPUSDT pass the Binance-tradable existence check (additive — keeps
+    // the BTC/ETH entries the other cases rely on).
+    await fx.di.redis.raw().set(
+      'exchange-info:cache',
+      JSON.stringify({
+        symbols: [
+          {
+            symbol: 'BTCUSDT',
+            baseAsset: 'BTC',
+            quoteAsset: 'USDT',
+            status: 'TRADING',
+            filterTickSize: '0.01',
+          },
+          {
+            symbol: 'ETHUSDT',
+            baseAsset: 'ETH',
+            quoteAsset: 'USDT',
+            status: 'TRADING',
+            filterTickSize: '0.01',
+          },
+          {
+            symbol: 'XRPUSDT',
+            baseAsset: 'XRP',
+            quoteAsset: 'USDT',
+            status: 'TRADING',
+            filterTickSize: '0.01',
+          },
+        ],
+        fetchedAt: '2026-05-31T00:00:00.000Z',
+      }),
+    );
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'XRPUSDT' }),
+      },
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('CONFLICT');
+    expect(body.error.message).toContain('already managed by');
+  });
+
+  it('rejects a different symbol over the same base a sibling manages (cross-quote, 409)', async () => {
+    // A sibling under Alice manages BTCUSDT. Alice's primary then tries BTCFDUSD:
+    // a different symbol but the same BTC wallet line, so base-asset exclusivity
+    // must block it where a symbol-only guard would not.
+    const sibling = randomUUID();
+    await fx.di.pool.query(
+      `insert into profiles (id, account_id, name, strategy_name, strategy_version, config, state)
+       values ($1, $2, 'sibling-cross', 'trailing-trade', '1.0.0', '{}', '{}')`,
+      [sibling, fx.alice.accountId],
+    );
+    await fx.di.pool.query(
+      `insert into profile_symbols (profile_id, symbol, base_asset, source) values ($1, 'BTCUSDT', 'BTC', 'auto')`,
+      [sibling],
+    );
+    // Keep BTCUSDT/ETHUSDT so later add cases in this file still resolve them
+    // (the cache key is shared across tests); add BTCFDUSD for this case.
+    await fx.di.redis.raw().set(
+      'exchange-info:cache',
+      JSON.stringify({
+        symbols: [
+          { symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', status: 'TRADING' },
+          { symbol: 'ETHUSDT', baseAsset: 'ETH', quoteAsset: 'USDT', status: 'TRADING' },
+          {
+            symbol: 'BTCFDUSD',
+            baseAsset: 'BTC',
+            quoteAsset: 'FDUSD',
+            status: 'TRADING',
+            filterTickSize: '0.01',
+          },
+        ],
+        fetchedAt: '2026-05-31T00:00:00.000Z',
+      }),
+    );
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'BTCFDUSD' }),
+      },
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('CONFLICT');
+    expect(body.error.message).toContain('already managed by');
+  });
+
+  it('rejects a base equal to a sibling profile’s quote asset (#665, 409)', async () => {
+    // Symmetric exclusivity backstop: a sibling under Alice QUOTES ETH (funds its
+    // buys from the shared ETH balance). Alice's primary must not bind ETH as a
+    // tradable base — sizing sells / arming stops against a balance the sibling
+    // silently spends. #661 guarded only the discovery pre-filter; this pins the
+    // manual-add funnel.
+    const sibling = randomUUID();
+    await fx.di.pool.query(
+      `insert into profiles (id, account_id, name, strategy_name, strategy_version, config, state, quote_asset)
+       values ($1, $2, 'sibling-quote', 'trailing-trade', '1.0.0', '{}', '{}', 'ETH')`,
+      [sibling, fx.alice.accountId],
+    );
+    // Keep BTCUSDT/ETHUSDT resolvable (shared cache key across tests).
+    await fx.di.redis.raw().set(
+      'exchange-info:cache',
+      JSON.stringify({
+        symbols: [
+          { symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', status: 'TRADING' },
+          {
+            symbol: 'ETHUSDT',
+            baseAsset: 'ETH',
+            quoteAsset: 'USDT',
+            status: 'TRADING',
+            filterTickSize: '0.01',
+          },
+        ],
+        fetchedAt: '2026-05-31T00:00:00.000Z',
+      }),
+    );
+    const res = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'ETHUSDT' }),
+      },
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('CONFLICT');
+  });
+
+  it('add and remove bust the dashboard cache so the symbol list is fresh on the next read', async () => {
+    const dashboardUrl = `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/dashboard`;
+    const symbolsOf = async (): Promise<string[]> => {
+      const res = await fx.app.request(dashboardUrl, { headers: headers(fx.alice.userId) });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { symbols: { symbol: string }[] };
+      return body.symbols.map((s) => s.symbol);
+    };
+
+    // Warm the 5s-TTL dashboard cache without ETHUSDT.
+    expect(await symbolsOf()).not.toContain('ETHUSDT');
+
+    // Add it. Without the cache-bust the warmed payload would still answer
+    // the next read (no symbol in the key for a symbol-scoped wipe to hit),
+    // so ETHUSDT would be invisible until the TTL — the reported flake.
+    const add = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'ETHUSDT' }),
+      },
+    );
+    expect(add.status).toBe(201);
+    expect(await symbolsOf()).toContain('ETHUSDT');
+
+    // Remove it — same cache must drop it immediately on the next read.
+    const del = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT`,
+      {
+        method: 'DELETE',
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(del.status).toBe(204);
+    expect(await symbolsOf()).not.toContain('ETHUSDT');
+  });
+
+  it('DELETE untrack clears the durable symbol_states row so a re-add cold-loads fresh', async () => {
+    // Attach ETHUSDT and seed a durable strategy-state row (as the worker would
+    // after a fill). The untrack must drop it, otherwise a re-add would revive a
+    // stale position the operator never asked the profile to hold. The open
+    // condition rows go with it: only this symbol's tick can ever close one, and
+    // once the binding is gone that tick never runs again, so a survivor is read
+    // back forever as a live blocker on a coin the profile no longer holds.
+    const add = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'ETHUSDT' }),
+      },
+    );
+    expect(add.status).toBe(201);
+    await fx.di.pool.query(
+      `insert into symbol_states (profile_id, symbol, state, strategy_version)
+       values ($1, 'ETHUSDT', $2::jsonb, '2.0.0')
+       on conflict (profile_id, symbol) do update set state = excluded.state`,
+      [fx.alice.profileId, JSON.stringify({ schemaVersion: '2.0.0', avgEntryPrice: '1500' })],
+    );
+    // One condition about the symbol and one about the profile itself. The
+    // profile-level subject is the empty-string sentinel, not a symbol, so it
+    // must outlive a per-symbol teardown.
+    await fx.di.pool.query(
+      `insert into condition_states (profile_id, condition, symbol, code)
+       values ($1, 'entry-blocked', 'ETHUSDT', 'knife-guard'),
+              ($1, 'discovery-idle', '', 'no-candidates')
+       on conflict (profile_id, condition, symbol) do update set code = excluded.code`,
+      [fx.alice.profileId],
+    );
+
+    const del = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT`,
+      {
+        method: 'DELETE',
+        headers: headers(fx.alice.userId),
+      },
+    );
+    expect(del.status).toBe(204);
+
+    const states = await fx.di.pool.query(
+      `select 1 from symbol_states where profile_id = $1 and symbol = 'ETHUSDT'`,
+      [fx.alice.profileId],
+    );
+    expect(states.rowCount).toBe(0);
+    const symbolCondition = await fx.di.pool.query(
+      `select 1 from condition_states where profile_id = $1 and symbol = 'ETHUSDT'`,
+      [fx.alice.profileId],
+    );
+    expect(symbolCondition.rowCount).toBe(0);
+    const profileCondition = await fx.di.pool.query(
+      `select 1 from condition_states where profile_id = $1 and condition = 'discovery-idle'`,
+      [fx.alice.profileId],
+    );
+    expect(profileCondition.rowCount).toBe(1);
+    // The profile_symbols binding is gone too (the untrack, unchanged).
+    const bound = await fx.di.pool.query(
+      `select 1 from profile_symbols where profile_id = $1 and symbol = 'ETHUSDT'`,
+      [fx.alice.profileId],
+    );
+    expect(bound.rowCount).toBe(0);
+  });
+
+  it('DELETE untrack stays 204 when a claimed override survives the wipe', async () => {
+    // The override-cancel route answers 409 for a claimed row, because cancelling one
+    // action while the bot is acting on it is a contradiction. A symbol wipe is not
+    // that request: it is a wholesale teardown that drops the binding, the state and
+    // the cache regardless, and the claimed row it cannot delete is left to the
+    // worker's own settle/reaper path. Reporting a conflict here would block the
+    // teardown on a row the operator is not asking about.
+    const add = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+      {
+        method: 'POST',
+        headers: headers(fx.alice.userId),
+        body: JSON.stringify({ symbol: 'ETHUSDT' }),
+      },
+    );
+    expect(add.status).toBe(201);
+    // A row a tick has claimed: `processing_at` set, so the wipe's delete skips it.
+    const seeded = await fx.di.pool.query<{ id: string }>(
+      `insert into override_actions (profile_id, symbol, action, action_at, payload, triggered_by, processing_at)
+       values ($1, 'ETHUSDT', 'buy', now(), '{}'::jsonb, 'test', now())
+       returning id`,
+      [fx.alice.profileId],
+    );
+    const overrideKey = profileKey(
+      { accountId: fx.alice.accountId, profileId: fx.alice.profileId },
+      'override',
+      'ETHUSDT',
+    );
+    await fx.di.redis.raw().set(overrideKey, '{}');
+
+    const del = await fx.app.request(
+      `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT`,
+      { method: 'DELETE', headers: headers(fx.alice.userId) },
+    );
+    expect(del.status).toBe(204);
+
+    // The claimed row outlives the wipe by design; the worker settles it.
+    const survivor = await fx.di.pool.query(
+      `select 1 from override_actions where id = $1 and consumed_at is null`,
+      [seeded.rows[0]?.id],
+    );
+    expect(survivor.rowCount).toBe(1);
+    // Unlike an override cancel, the teardown still drops the cache key.
+    expect(await fx.di.redis.raw().exists(overrideKey)).toBe(0);
+    const bound = await fx.di.pool.query(
+      `select 1 from profile_symbols where profile_id = $1 and symbol = 'ETHUSDT'`,
+      [fx.alice.profileId],
+    );
+    expect(bound.rowCount).toBe(0);
+  });
+
+  it('add and remove enqueue a worker resync (no static jobId) when the profile is enabled', async () => {
+    // The worker reads a profile's symbols only at enable-time; without a
+    // resync signal a symbol added or removed after start is never ticked
+    // and gets no technicals computed. An enabled profile must enqueue
+    // reconfigure-profile on both add and remove; a disabled one needs no
+    // signal (the next start re-reads symbols fresh). The job must NOT carry
+    // a static jobId — BullMQ would dedupe it against the retained completed
+    // job and silently skip every resync after the first.
+    const addSpy = vi.spyOn(fx.di.queue, 'add').mockResolvedValue({} as never);
+    try {
+      await fx.di.pool.query(`update profiles set enabled = true where id = $1`, [
+        fx.alice.profileId,
+      ]);
+      const add = await fx.app.request(
+        `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+        {
+          method: 'POST',
+          headers: headers(fx.alice.userId),
+          body: JSON.stringify({ symbol: 'ETHUSDT' }),
+        },
+      );
+      expect(add.status).toBe(201);
+      const del = await fx.app.request(
+        `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/ETHUSDT`,
+        {
+          method: 'DELETE',
+          headers: headers(fx.alice.userId),
+        },
+      );
+      expect(del.status).toBe(204);
+
+      const resyncs = addSpy.mock.calls.filter((call) => call[0] === 'reconfigure-profile');
+      expect(resyncs).toHaveLength(2);
+      for (const call of resyncs) {
+        expect(call[1]).toMatchObject({
+          userId: fx.alice.userId,
+          profileId: fx.alice.profileId,
+        });
+        expect(call[2]).not.toHaveProperty('jobId');
+      }
+    } finally {
+      addSpy.mockRestore();
+      await fx.di.pool.query(`update profiles set enabled = false where id = $1`, [
+        fx.alice.profileId,
+      ]);
+    }
+  });
+
+  it('combined add-symbol + entry price seeds the ledger and enqueues the force-set job (#496)', async () => {
+    // Adding a coin the operator already holds, priced, in one step: size the
+    // held quantity from the wallet snapshot, seed the avg_entry_prices ledger,
+    // and enqueue the force-set job so the running strategy manages and can sell
+    // the held position instead of treating it as flat.
+    const addSpy = vi.spyOn(fx.di.queue, 'add').mockResolvedValue({} as never);
+    try {
+      await fx.di.pool.query(`update profiles set enabled = true where id = $1`, [
+        fx.alice.profileId,
+      ]);
+      // Wallet holds 3 ETH; the balance read joins the global symbol-info.
+      await fx.di.redis
+        .raw()
+        .set(
+          profileKey(
+            { accountId: fx.alice.accountId, profileId: fx.alice.profileId },
+            'accountInfo',
+          ),
+          JSON.stringify({ balances: { ETH: { free: '3', locked: '0' } } }),
+        );
+      await fx.di.redis
+        .raw()
+        .set(GLOBAL_KEYS.symbolInfo('ETHUSDT', 'live'), JSON.stringify({ baseAsset: 'ETH' }));
+
+      const res = await fx.app.request(
+        `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols`,
+        {
+          method: 'POST',
+          headers: headers(fx.alice.userId),
+          body: JSON.stringify({ symbol: 'ETHUSDT', avgEntryPrice: '1500' }),
+        },
+      );
+      expect(res.status).toBe(201);
+
+      // Ledger seeded with the operator's price + the full wallet quantity.
+      const { rows } = await fx.di.pool.query<{ avg_entry_price: string; quantity: string }>(
+        `select avg_entry_price, quantity from avg_entry_prices
+         where profile_id = $1 and symbol = 'ETHUSDT'`,
+        [fx.alice.profileId],
+      );
+      expect(Number(rows[0]?.avg_entry_price)).toBe(1500);
+      expect(Number(rows[0]?.quantity)).toBe(3);
+
+      // The force-set job is enqueued so the running strategy picks up the cost
+      // basis (a reconfigure revive alone would no-op on a re-add of an
+      // already-priced symbol).
+      const applyCalls = addSpy.mock.calls.filter((c) => c[0] === 'apply-avg-entry-price');
+      expect(applyCalls).toHaveLength(1);
+      expect(applyCalls[0]?.[1]).toMatchObject({
+        userId: fx.alice.userId,
+        profileId: fx.alice.profileId,
+        symbol: 'ETHUSDT',
+      });
+    } finally {
+      addSpy.mockRestore();
+      await fx.di.pool.query(
+        `delete from avg_entry_prices where profile_id = $1 and symbol = 'ETHUSDT'`,
+        [fx.alice.profileId],
+      );
+      await fx.di.pool.query(
+        `delete from profile_symbols where profile_id = $1 and symbol = 'ETHUSDT'`,
+        [fx.alice.profileId],
+      );
+      await fx.di.pool.query(`update profiles set enabled = false where id = $1`, [
+        fx.alice.profileId,
+      ]);
+    }
+  });
+
+  it('PATCH override enqueues a worker resync (no static jobId) when the profile is enabled', async () => {
+    // The worker caches the resolved tick context (config + merged override)
+    // across ticks; a per-symbol override edit must enqueue reconfigure-profile
+    // so the cache is evicted and the new override applies on the next tick
+    // instead of waiting out the cache TTL. As with add/remove, the job must
+    // not carry a static jobId or BullMQ would dedupe later resyncs away.
+    const addSpy = vi.spyOn(fx.di.queue, 'add').mockResolvedValue({} as never);
+    try {
+      await fx.di.pool.query(`update profiles set enabled = true where id = $1`, [
+        fx.alice.profileId,
+      ]);
+      const res = await fx.app.request(
+        `/api/accounts/${fx.alice.accountId}/profiles/${fx.alice.profileId}/symbols/BTCUSDT`,
+        {
+          method: 'PATCH',
+          headers: headers(fx.alice.userId),
+          body: JSON.stringify({ overrideConfig: { buy: { maxPurchaseAmount: '25' } } }),
+        },
+      );
+      expect(res.status).toBe(200);
+
+      const resyncs = addSpy.mock.calls.filter((call) => call[0] === 'reconfigure-profile');
+      expect(resyncs).toHaveLength(1);
+      expect(resyncs[0]?.[1]).toMatchObject({
+        userId: fx.alice.userId,
+        profileId: fx.alice.profileId,
+      });
+      expect(resyncs[0]?.[2]).not.toHaveProperty('jobId');
+    } finally {
+      addSpy.mockRestore();
+      await fx.di.pool.query(`update profiles set enabled = false where id = $1`, [
+        fx.alice.profileId,
+      ]);
+    }
+  });
+});
