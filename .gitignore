@@ -1,0 +1,77 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea
+.vs
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Deps
+node_modules
+
+# Build outputs
+dist
+build
+coverage
+playwright-report
+test-results
+.app-e2e.*
+.turbo
+**/tsconfig.tsbuildinfo
+
+# Python / docs build
+.venv
+.python-version
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+site
+
+# Logs
+log
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Bun
+.bun-version
+
+.claude/*
+# Negation must target the directory: git never descends into a dir excluded by
+# .claude/*, so a pattern naming a file inside it can never re-include it.
+!.claude/rules/
+!.claude/skills/
+
+# Playwright MCP scratch output (snapshots, screenshots, console logs)
+.playwright-mcp/
+
+
+# Local backups
+backups/
+# Playwright walkthrough screenshots
+*.png
+# ...but the docs site's screenshots are intentionally versioned
+!docs/assets/screenshots/**/*.png
+# ...as are the README's, kept out of screenshots/ because no-stale-screenshot.sh
+# only reconciles that directory against docs pages, and README is not one.
+!docs/assets/readme/**/*.png
+# Worker frame-trace diagnostic (holds account balances/holdings; defaults to OS tmp, ignore any stray repo-local copy). Not *.jsonl: committed test fixtures use that extension.
+worker-frame-trace.jsonl
+
+# Staged-migration scratch dirs. The migration suites copy the shipped `NNNN_*.sql` set into a mkdtemp under `__tests__/` so a migration can be applied to rows seeded through the PREVIOUS schema; the dir is removed in a `finally`, but a crashed or killed run leaves ~90 stray copies of real migrations behind, and the next `git add -A` sweeps every one of them into the diff. Ignored rather than trusted to clean up.
+packages/db/__tests__/.tmp-*/
