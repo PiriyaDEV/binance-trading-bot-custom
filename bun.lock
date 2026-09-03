@@ -303,6 +303,16 @@
         "zod": "~4.4.3",
       },
     },
+    "packages/strategy/bridge-scout": {
+      "name": "@app/strategy-bridge-scout",
+      "version": "1.0.0",
+      "dependencies": {
+        "@app/contracts": "workspace:*",
+        "@app/money": "workspace:*",
+        "@app/strategy-core": "workspace:*",
+        "zod": "~4.4.3",
+      },
+    },
     "packages/strategy/core": {
       "name": "@app/strategy-core",
       "version": "1.0.0",
@@ -337,6 +347,7 @@
       "name": "@app/strategy-registry",
       "version": "1.0.0",
       "dependencies": {
+        "@app/strategy-bridge-scout": "workspace:*",
         "@app/strategy-core": "workspace:*",
         "@app/strategy-momentum": "workspace:*",
         "@app/strategy-rebalance": "workspace:*",
@@ -404,6 +415,8 @@
     "@app/server": ["@app/server@workspace:apps/server"],
 
     "@app/strategy-backtest": ["@app/strategy-backtest@workspace:packages/strategy/backtest"],
+
+    "@app/strategy-bridge-scout": ["@app/strategy-bridge-scout@workspace:packages/strategy/bridge-scout"],
 
     "@app/strategy-core": ["@app/strategy-core@workspace:packages/strategy/core"],
 

@@ -8,8 +8,8 @@ const TT_ENTRY_INTENTS: readonly string[] = ['grid-buy', 'bull-pyramid'];
 // Iterated at RUNTIME, not asserted with `satisfies`: vitest strips types without checking them, so a type-level guard in this file would never be evaluated, and apps/web's `tsc -b` covers `src/` only. Reading the exported array is what makes an added intent fail a real assertion.
 const TT_EXIT_INTENTS = TT_INTENTS.filter((i) => !TT_ENTRY_INTENTS.includes(i));
 
-// Momentum and rebalance pin no intent union, so their sell reasons are listed literally, read off their `reason:` emission sites in `packages/strategy/{momentum,rebalance}/src/`.
-const OTHER_STRATEGY_EXIT_INTENTS = ['exit', 'rotate-exit', 'rebalance'];
+// Momentum, rebalance and bridge-scout pin no intent union, so their sell reasons are listed literally, read off their `reason:` emission sites in `packages/strategy/{momentum,rebalance,bridge-scout}/src/`.
+const OTHER_STRATEGY_EXIT_INTENTS = ['exit', 'rotate-exit', 'rebalance', 'bridge-scout-jump'];
 
 const ALL_EXIT_INTENTS = [...TT_EXIT_INTENTS, ...OTHER_STRATEGY_EXIT_INTENTS];
 

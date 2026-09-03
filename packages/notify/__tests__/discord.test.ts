@@ -56,6 +56,34 @@ describe('discord provider', () => {
     expect(fields[1]).toMatchObject({ name: 'Order ID', value: '91823' });
   });
 
+  it('sets the embed url when the message carries a link, omits it otherwise', async () => {
+    let bodyWithLink: Record<string, unknown> = {};
+    let bodyWithoutLink: Record<string, unknown> = {};
+    const capture = (target: { current: Record<string, unknown> }) =>
+      vi.fn(async (_url: string, init: { body: string }) => {
+        target.current = JSON.parse(init.body) as Record<string, unknown>;
+        return new Response('ok', { status: 200 });
+      }) as unknown as typeof fetch;
+
+    const withLinkTarget = { current: bodyWithLink };
+    await createDiscordProvider({ fetchImpl: capture(withLinkTarget) }).send({
+      config: { webhookUrl: 'https://discord.com/api/webhooks/1/abc' },
+      message: { severity: 'info', topic: 't', title: 'T', link: 'https://example.com/run/1' },
+    });
+    bodyWithLink = withLinkTarget.current;
+    const embedWithLink = (bodyWithLink['embeds'] as Record<string, unknown>[])[0];
+    expect(embedWithLink?.['url']).toBe('https://example.com/run/1');
+
+    const withoutLinkTarget = { current: bodyWithoutLink };
+    await createDiscordProvider({ fetchImpl: capture(withoutLinkTarget) }).send({
+      config: { webhookUrl: 'https://discord.com/api/webhooks/1/abc' },
+      message: { severity: 'info', topic: 't', title: 'T' },
+    });
+    bodyWithoutLink = withoutLinkTarget.current;
+    const embedWithoutLink = (bodyWithoutLink['embeds'] as Record<string, unknown>[])[0];
+    expect(embedWithoutLink?.['url']).toBeUndefined();
+  });
+
   it('throws on non-2xx', async () => {
     const fetchImpl = vi.fn(
       async () => new Response('no', { status: 500 }),

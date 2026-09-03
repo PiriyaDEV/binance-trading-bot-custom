@@ -50,6 +50,34 @@ describe('pushover provider', () => {
     expect(params.get('message')).toContain('Order ID: 91823');
   });
 
+  it('sets url/url_title when the message carries a link, omits both otherwise', async () => {
+    let withLinkBody = '';
+    const fetchWithLink = vi.fn(async (_url: string, init: { body: string }) => {
+      withLinkBody = init.body;
+      return new Response('{"status":1}', { status: 200 });
+    }) as unknown as typeof fetch;
+    await createPushoverProvider({ fetchImpl: fetchWithLink }).send({
+      config: { apiToken: 'app-token', userKey: 'user-key' },
+      message: { severity: 'info', topic: 't', title: 'T', link: 'https://example.com/run/1' },
+    });
+    const withLinkParams = new URLSearchParams(withLinkBody);
+    expect(withLinkParams.get('url')).toBe('https://example.com/run/1');
+    expect(withLinkParams.get('url_title')).toBe('Open');
+
+    let withoutLinkBody = '';
+    const fetchWithoutLink = vi.fn(async (_url: string, init: { body: string }) => {
+      withoutLinkBody = init.body;
+      return new Response('{"status":1}', { status: 200 });
+    }) as unknown as typeof fetch;
+    await createPushoverProvider({ fetchImpl: fetchWithoutLink }).send({
+      config: { apiToken: 'app-token', userKey: 'user-key' },
+      message: { severity: 'info', topic: 't', title: 'T' },
+    });
+    const withoutLinkParams = new URLSearchParams(withoutLinkBody);
+    expect(withoutLinkParams.get('url')).toBeNull();
+    expect(withoutLinkParams.get('url_title')).toBeNull();
+  });
+
   it('throws on non-2xx', async () => {
     const fetchImpl = vi.fn(
       async () => new Response('no', { status: 500 }),

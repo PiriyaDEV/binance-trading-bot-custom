@@ -16,6 +16,8 @@ export function exitIntentLabel(intent: string): string {
       return 'time-stop';
     case 'manual':
       return 'manual';
+    case 'bridge-scout-jump':
+      return 'jump';
     case 'unknown':
     case 'backfill':
       return 'unknown';
@@ -49,6 +51,8 @@ export function glossExitIntent(intent: string): string {
       return 'rotation exit — sold to fund a higher-ranked coin';
     case 'rebalance':
       return 'rebalance — trimmed back to the target weight';
+    case 'bridge-scout-jump':
+      return 'jump — sold to rotate into a coin that pulled ahead on the price ratio';
     case 'manual':
       return 'manual sell';
     case 'unknown':
