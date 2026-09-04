@@ -1,19 +1,33 @@
 /*
  * i18n shim: typed t(key, vars?) conforming to ICU MessageFormat key shape.
  *
- * v1.0 ships English-only. This shim has a typed signature so a future swap
- * to formatjs / lingui / @lingui/core is a one-line provider injection at
- * `setI18nProvider(impl)`. See apps/web/README.md ("i18n provider swap").
+ * Ships English + Thai catalogs, switched at runtime by locale (see
+ * `useLocale` / `LocaleRoot`). This shim has a typed signature so a future
+ * swap to formatjs / lingui / @lingui/core is a one-line provider injection
+ * at `setI18nProvider(impl)`. See apps/web/README.md ("i18n provider swap").
  *
  * ICU key shape: dot.namespaced.snake_case identifiers.
+ *
+ * Reactivity: `t()` itself is a plain function — most call sites read it
+ * directly at render time, not through a hook, so swapping `provider` alone
+ * would not re-render an already-mounted component. `LocaleRoot` (see
+ * `use-locale.ts`) forces the fix at the root instead: it keys its child
+ * subtree on the current locale, so a locale change remounts every
+ * descendant from scratch and every `t()` call re-evaluates against the new
+ * provider — no call site needs to change.
  */
+
+import { th } from './i18n-th';
 
 export type I18nVars = Readonly<Record<string, string | number>>;
 export type I18nKey = `${string}.${string}`;
 export type I18nProvider = (key: I18nKey, vars?: I18nVars) => string;
+export type Locale = 'en' | 'th';
+export const LOCALES: readonly Locale[] = ['en', 'th'];
 
 const en: Readonly<Record<string, string>> = {
   'app.title': 'BOT',
+  'breadcrumb.label': 'Breadcrumb',
   'common.cancel': 'Cancel',
   'common.loading': 'Loading…',
   'demo.advisor_unavailable':
@@ -47,6 +61,10 @@ const en: Readonly<Record<string, string>> = {
   'theme.toggle.to_dark': 'Switch to dark theme',
   'theme.light': 'Light',
   'theme.dark': 'Dark',
+  'locale.toggle.to_th': 'เปลี่ยนเป็นภาษาไทย',
+  'locale.toggle.to_en': 'Switch to English',
+  'locale.th': 'ไทย',
+  'locale.en': 'English',
   'error.title': 'Something went wrong',
   'error.retry': 'Retry',
   'error.unknown': 'An unknown error occurred. Try again.',
@@ -87,6 +105,7 @@ const en: Readonly<Record<string, string>> = {
   'home.heading': 'Home',
   'home.summary.unrealised': 'Unrealised P/L',
   'home.summary.practice': 'Testnet (practice)',
+  'home.summary.live': 'Live',
   'home.summary.positions': 'Open positions',
   'home.summary.open_orders': 'Open orders',
   'home.profiles.title': 'Profiles',
@@ -307,6 +326,122 @@ const en: Readonly<Record<string, string>> = {
   'profile.controls.history': 'History',
   'profile.controls.backtest': 'Backtest',
   'home.symbols.add': 'Add symbol',
+  'technicals.loading': 'Technicals compute health loading',
+  'technicals.unavailable_title': 'Health unavailable: {errMsg}',
+  'technicals.unavailable_aria': 'Technicals compute health unavailable: {reason}',
+  'technicals.unavailable_label': 'technicals (health unavailable: {reason})',
+  'technicals.silent_title': 'No recent compute batch — the cron may not be running.',
+  'technicals.silent_aria':
+    'Technicals compute silent — no recent batch; the cron may not be running',
+  'technicals.silent_label': 'technicals silent',
+  'technicals.healthy': 'technicals',
+  'technicals.degraded': 'technicals degraded',
+  'technicals.outage': 'technicals outage',
+  'technicals.word_healthy': 'healthy',
+  'technicals.word_degraded': 'degraded',
+  'technicals.word_outage': 'outage',
+  'technicals.fresh_ago': 'fresh {age} ago',
+  'technicals.never_fresh': 'never fresh',
+  'technicals.aria': 'Technicals {word}; last fetch {ageLabel} ago{freshSuffix}',
+  'technicals.age_suffix': '{ageLabel} ago',
+  'investigate.button.idle': 'Investigate',
+  'investigate.button.running': 'Investigating',
+  'manage.button': 'Manage profile',
+  'manage.title': 'Manage profile',
+  'manage.description': 'Run a diagnosis or reconcile fees for this profile.',
+  'manage.reconcile_fees.button': 'Reconcile fees',
+  'manage.reconcile_fees.success':
+    'Reconciling fees from Binance — check History again in a moment.',
+  'manage.reconcile_fees.error': 'Could not start fee reconciliation.',
+  'market_trend.title': 'Market trend',
+  'market_trend.error': 'Market trend unavailable.',
+  'market_trend.warming': 'Getting the latest market data…',
+  'market_trend.next_update': 'Next update in ~{seconds}s',
+  'market_trend.updates_stopped': 'Updates stopped. Restart the worker.',
+  'market_trend.checking': 'Checking…',
+  'market_trend.regime.bull': 'Bull',
+  'market_trend.regime.bear': 'Bear',
+  'market_trend.regime.neutral': 'Neutral',
+  'market_trend.vs_sma50.above': '{pct}% above 50-day avg',
+  'market_trend.vs_sma50.below': '{pct}% below 50-day avg',
+  'market_trend.verdict.weak':
+    'Weak market — Bitcoin and Ethereum are both falling and most coins are down today.',
+  'market_trend.verdict.strong':
+    'Strong market — Bitcoin and Ethereum are both rising and most coins are up today.',
+  'market_trend.verdict.cautious': 'Mixed and cautious — most coins are down today.',
+  'market_trend.verdict.mixed': 'Mixed — no clear direction right now.',
+  'market_trend.breadth.title': 'Coins rising (24h)',
+  'market_trend.breadth.rising': '{pct}% rising',
+  'market_trend.breadth.cautious': 'Cautious',
+  'market_trend.breadth.upbeat': 'Upbeat',
+  'market_trend.breadth.aria': 'Market breadth: {upCount} of {total} pairs up over 24 hours',
+  'market_trend.footnote':
+    "The overall market mood. It's context, not a buy or sell signal — your bot still decides each coin on its own.",
+  'realised_pnl.period.day': 'D',
+  'realised_pnl.period.week': 'W',
+  'realised_pnl.period.month': 'M',
+  'realised_pnl.period.all': 'All',
+  'realised_pnl.period_group': 'Period',
+  'realised_pnl.heading': 'Recorded P/L',
+  'realised_pnl.all_time': 'All time',
+  'realised_pnl.no_trades': 'No closed trades · {period}',
+  'realised_pnl.trade_count.one': '{count} closed trade · {period}',
+  'realised_pnl.trade_count.other': '{count} closed trades · {period}',
+  'realised_pnl.unavailable': 'Realised P/L unavailable.',
+  'pnl_hero.total': 'Total P/L (all time)',
+  'pnl_hero.today': 'Today',
+  'pnl_hero.open': 'Open now',
+  'pnl_hero.footnote':
+    'Total is net of fees since your first trade. Today and Open now are the pieces it is made of.',
+  'pnl_hero.thb_unit': 'THB',
+  'recent_trades.title': 'Recent trades',
+  'recent_trades.view_all': 'View all →',
+  'recent_trades.empty': 'No closed trades yet.',
+  'recent_trades.col.symbol': 'Symbol',
+  'recent_trades.col.closed_because': 'Closed because',
+  'recent_trades.col.pnl': 'P/L',
+  'recent_trades.col.when': 'When',
+  'wizard.preset.title': 'Quick start',
+  'wizard.preset.subtitle':
+    'Pick a ready-made setup. Every option previews a real backtest against a basket of major coins before it creates anything, so you see how it actually performed first.',
+  'wizard.preset.recommended': 'Recommended',
+  'wizard.preset.submit': 'Create & start trading',
+  'wizard.preset.manual_link': 'Advanced: pick a strategy and configure it manually instead',
+  'wizard.preset.conservative.name': 'Conservative',
+  'wizard.preset.conservative.description':
+    'Smaller trades, tighter stop-loss, only 2 coins at once. Lower risk, lower reward.',
+  'wizard.preset.balanced.name': 'Balanced',
+  'wizard.preset.balanced.description':
+    "The strategy's own tuned defaults, up to 5 coins at once. A reasonable middle ground.",
+  'wizard.preset.aggressive.name': 'Aggressive',
+  'wizard.preset.aggressive.description':
+    'Bigger trades, more room before a stop-loss cuts, up to 8 coins at once. Higher risk, higher reward.',
+  'wizard.preset.smart.name': 'Smart',
+  'wizard.preset.smart.badge': 'Backtest-picked',
+  'wizard.preset.smart.description':
+    'Backtests a basket of major coins at a couple of trading frequencies over the last 45 days, then binds whichever coins and interval actually performed best. Takes a couple of minutes.',
+  'wizard.preset.smart.submit': 'Run backtest & create',
+  'wizard.preset.smart.phase.creating': 'Creating the profile…',
+  'wizard.preset.smart.phase.backtesting': 'Backtesting ({completed}/{total} done)…',
+  'wizard.preset.smart.phase.binding': 'Applying the result…',
+  'wizard.preset.smart.wait_note':
+    'This runs real backtests over the last 45 days, so it can take a couple of minutes — do not close this page.',
+  'wizard.preset.smart.done': 'Backtest picked {interval} candles and {count} coins:',
+  'wizard.preset.smart.from_cache': '(reused a previously cached preview, not a fresh run)',
+  'wizard.preset.smart.trades': '{count} trades',
+  'wizard.preset.smart.robustness.clears':
+    'Clears the Live-gate’s own bar — the pick held up out-of-sample, not just on the window it was picked from.',
+  'wizard.preset.smart.robustness.misses':
+    'Below the Live-gate’s bar out-of-sample — it looked good on the window tested, but that is not proof it holds up going forward. Consider backtesting further before enabling live.',
+  'wizard.preset.smart.robustness.detail':
+    'In-sample: profit factor {inPf}, alpha {inAlpha}%. Out-of-sample (most recent slice): profit factor {oosPf}, alpha {oosAlpha}%.',
+  'wizard.preset.smart.view': 'View profile',
+  'wizard.preset.preview.clears': 'Checked {ago} · profit factor {pf} · clears the Live-gate',
+  'wizard.preset.preview.misses': 'Checked {ago} · profit factor {pf} · below the Live-gate',
+  'wizard.smart.error.no_result':
+    'Every backtest failed or timed out, so nothing could be picked. Try again, or use one of the fixed presets instead.',
+  'wizard.smart.error.all_conflicted':
+    "Every backtested coin's base asset is already traded by another profile on this account, so none could be bound. Free one up, or use one of the fixed presets on a different coin instead.",
 };
 
 function interpolate(template: string, vars?: I18nVars): string {
@@ -317,15 +452,31 @@ function interpolate(template: string, vars?: I18nVars): string {
   });
 }
 
-const fallbackProvider: I18nProvider = (key, vars) => {
-  const tmpl = Object.prototype.hasOwnProperty.call(en, key) ? en[key] : undefined;
-  return interpolate(tmpl ?? key, vars);
-};
+const catalogs: Readonly<Record<Locale, Readonly<Record<string, string>>>> = { en, th };
 
-let provider: I18nProvider = fallbackProvider;
+/** Locale-aware provider: looks up `locale`'s catalog, falling back to `en` for any key that catalog has not (yet) translated, and to the raw key as a last resort so an unknown key never renders blank. */
+function catalogProvider(locale: Locale): I18nProvider {
+  return (key, vars) => {
+    const catalog = catalogs[locale];
+    const tmpl = Object.prototype.hasOwnProperty.call(catalog, key)
+      ? catalog[key]
+      : Object.prototype.hasOwnProperty.call(en, key)
+        ? en[key]
+        : undefined;
+    return interpolate(tmpl ?? key, vars);
+  };
+}
 
+let provider: I18nProvider = catalogProvider('en');
+
+/** Escape hatch for a future real i18n library — bypasses the built-in catalogs entirely. */
 export function setI18nProvider(p: I18nProvider): void {
   provider = p;
+}
+
+/** Switches `t()` to read from `locale`'s catalog. Called by `useLocale`; not reactive on its own — see the module doc comment and `LocaleRoot`. */
+export function setActiveLocale(locale: Locale): void {
+  provider = catalogProvider(locale);
 }
 
 export function t(key: I18nKey, vars?: I18nVars): string {

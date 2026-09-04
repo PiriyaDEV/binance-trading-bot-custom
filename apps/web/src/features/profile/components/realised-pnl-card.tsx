@@ -15,14 +15,17 @@ import { PnlPercent, PnlValue } from '@/shared/components/pnl-value';
 import { Button } from '@/shared/components/ui/button';
 import { useTimezone } from '@/shared/context/timezone-context';
 import { formatDate } from '@/shared/lib/format-time';
+import { t, type I18nKey } from '@/shared/lib/i18n';
 
 import type { ClosedTradesPeriod } from '@app/contracts';
 
-const PERIODS: readonly { readonly code: ClosedTradesPeriod; readonly label: string }[] = [
-  { code: 'd', label: 'D' },
-  { code: 'w', label: 'W' },
-  { code: 'm', label: 'M' },
-  { code: 'a', label: 'All' },
+// `labelKey`, not resolved text: kept as a module-level constant like the
+// rest of the file's static shape, resolved with `t()` at render time below.
+const PERIODS: readonly { readonly code: ClosedTradesPeriod; readonly labelKey: I18nKey }[] = [
+  { code: 'd', labelKey: 'realised_pnl.period.day' },
+  { code: 'w', labelKey: 'realised_pnl.period.week' },
+  { code: 'm', labelKey: 'realised_pnl.period.month' },
+  { code: 'a', labelKey: 'realised_pnl.period.all' },
 ];
 
 function periodLabel(
@@ -31,7 +34,7 @@ function periodLabel(
   to: string,
   timeZone: string,
 ): string {
-  if (period === 'a') return 'All time';
+  if (period === 'a') return t('realised_pnl.all_time');
   // Same zone the server used to cut the period, so the label can never name a
   // different day than the total it captions.
   const fromLabel = formatDate(from, timeZone);
@@ -61,12 +64,16 @@ export function RealisedPnlCard({
   const data = query.data;
 
   return (
-    <Card>
+    <Card className="gradient-hero">
       <section aria-labelledby="realised-pnl-heading" className="space-y-3">
         <h2 id="realised-pnl-heading" className="text-sm font-semibold text-fg">
-          Recorded P/L
+          {t('realised_pnl.heading')}
         </h2>
-        <div className="flex flex-wrap gap-1" role="group" aria-label="Period">
+        <div
+          className="flex flex-wrap gap-1"
+          role="group"
+          aria-label={t('realised_pnl.period_group')}
+        >
           {PERIODS.map((p) => (
             <Button
               key={p.code}
@@ -77,7 +84,7 @@ export function RealisedPnlCard({
               data-testid={`realised-period-${p.code}`}
               onClick={() => onPeriodChange(p.code)}
             >
-              {p.label}
+              {t(p.labelKey)}
             </Button>
           ))}
         </div>
@@ -106,15 +113,25 @@ export function RealisedPnlCard({
             </div>
             <p className="text-sm text-muted-fg" data-testid="realised-trade-count">
               {data.tradeCount === 0
-                ? `No closed trades · ${periodLabel(period, data.from, data.to, timeZone)}`
-                : `${data.tradeCount} closed trade${data.tradeCount === 1 ? '' : 's'} · ${periodLabel(period, data.from, data.to, timeZone)}`}
+                ? t('realised_pnl.no_trades', {
+                    period: periodLabel(period, data.from, data.to, timeZone),
+                  })
+                : t(
+                    data.tradeCount === 1
+                      ? 'realised_pnl.trade_count.one'
+                      : 'realised_pnl.trade_count.other',
+                    {
+                      count: data.tradeCount,
+                      period: periodLabel(period, data.from, data.to, timeZone),
+                    },
+                  )}
             </p>
           </div>
         ) : query.isLoading ? (
           // The headline figure and the trade-count line under it.
           <LoadingRows rows={2} />
         ) : (
-          <p className="text-sm text-muted-fg">Realised P/L unavailable.</p>
+          <p className="text-sm text-muted-fg">{t('realised_pnl.unavailable')}</p>
         )}
       </section>
     </Card>

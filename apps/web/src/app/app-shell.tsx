@@ -10,6 +10,7 @@ import { StatusBar } from '@/app/status-bar';
 import { TopBarStatus } from '@/app/top-bar-status';
 import { TopBarTicker, TopBarTickerBar } from '@/app/top-bar-ticker';
 import { useDemoMode } from '@/features/auth/api/auth';
+import { LanguageToggle } from '@/shared/components/language-toggle';
 import { ThemeToggle } from '@/shared/components/theme-toggle';
 import { buttonVariants } from '@/shared/components/ui/button';
 import { cn } from '@/shared/lib/cn';
@@ -122,6 +123,7 @@ export function AppShell({
             <Settings className="h-5 w-5" aria-hidden="true" />
           </Link>
         )}
+        <LanguageToggle />
         <ThemeToggle />
       </header>
       {/* Always-visible "is my money OK right now" strip: worker liveness (the

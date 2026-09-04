@@ -1,8 +1,8 @@
 ---
-version: v3
+version: v4
 name: Operator Terminal
 description: >-
-  Bauhaus-inspired dark trading terminal for a single solo operator. Near-black canvas with hairline 1px borders, square corners, and a single loud accent: amber yellow for selection, primary action, and active nav. Signal green = positive/go, signal red = negative/stop, orange = warning. Space Grotesk for UI text, JetBrains Mono for numbers. Dense on desktop with a collapsible left sidebar; still fully usable on a 375px phone via the bottom tab nav.
+  Dark trading terminal for a single solo operator, softened from v2/v3's Bauhaus-square language toward a cleaner, more fluid geometry — hairline 1px borders and a single loud accent still do the separation work, but corners are gently rounded and elevation is a soft blurred shadow instead of a hard offset. Amber yellow for selection, primary action, and active nav; signal green = positive/go, signal red = negative/stop, orange = warning. IBM Plex Sans Thai for UI text (one family, matched metrics for English and Thai), IBM Plex Mono for numbers. Dense on desktop with a collapsible left sidebar; still fully usable on a 375px phone via the bottom tab nav.
 
 colors:
   canvas: '#0e0e0e'
@@ -27,33 +27,40 @@ colors:
   focus: '#ffcc00'
 typography:
   hero:
-    fontFamily: JetBrains Mono Variable
+    fontFamily: IBM Plex Mono
     fontSize: 32px
     fontWeight: 700
     fontFeature: '"tnum" 1, "zero" 1'
   heading:
-    fontFamily: Space Grotesk Variable
+    fontFamily: IBM Plex Sans Thai
     fontSize: 18px
     fontWeight: 700
   title:
-    fontFamily: Space Grotesk Variable
+    fontFamily: IBM Plex Sans Thai
     fontSize: 14px
     fontWeight: 600
   body:
-    fontFamily: Space Grotesk Variable
+    fontFamily: IBM Plex Sans Thai
     fontSize: 14px
     fontWeight: 400
   label:
-    fontFamily: Space Grotesk Variable
+    fontFamily: IBM Plex Sans Thai
     fontSize: 12px
     fontWeight: 500
   data:
-    fontFamily: JetBrains Mono Variable
+    fontFamily: IBM Plex Mono
     fontSize: 13px
     fontWeight: 400
     fontFeature: '"tnum" 1, "zero" 1'
 rounded:
   none: 0px
+  xs: 4px
+  sm: 6px
+  md: 8px
+  lg: 12px
+  xl: 16px
+  2xl: 20px
+  3xl: 28px
   full: 9999px
 spacing:
   xs: 4px
@@ -63,22 +70,22 @@ spacing:
   xl: 24px
 components:
   button:
-    radius: '{rounded.none}'
+    radius: '{rounded.sm}'
     case: uppercase
     fontWeight: 600
     letterSpacing: 0.05em
   input:
     background: '{colors.surface-alt}'
     border: '{colors.border}'
-    radius: '{rounded.none}'
+    radius: '{rounded.sm}'
     focusBorder: '{colors.focus}'
   card:
     background: '{colors.surface}'
     border: '{colors.border}'
-    radius: '{rounded.none}'
+    radius: '{rounded.lg}'
     padding: '{spacing.lg}'
   badge:
-    radius: '{rounded.none}'
+    radius: '{rounded.xs}'
     case: uppercase
     style: 1px solid border in the semantic colour, tinted fill
   sidebar:
@@ -87,11 +94,20 @@ components:
     activeRule: 2px left border in accent
 ---
 
-# Operator Terminal — DESIGN.md (v3)
+# Operator Terminal — DESIGN.md (v4)
 
 The canonical visual system for the binance-trading-bot web app (`apps/web`). Token values live in `apps/web/src/styles/app.css` (the `[data-theme='dark']` block) — that file is the source of truth; the values above mirror it.
 
-**v3 "Unified Terminal"** keeps the v2 visual language unchanged (colours, typography, cards, tables below) and changes the **information architecture**: an overview dashboard at `/` plus a dedicated route per surface. A selected symbol opens its workspace at `/profiles/:id/symbols/:SYMBOL` (a full-width view with a symbol switch rail, `?tab` selecting trade/orders/market/logs); every per-profile editor (config, api-key, notifications, discovery, risk, bulk-order) and history, and backtest are their own routes, reached with `‹ Back`. Plus the new-profile wizard, login/onboarding, and the System utility pages. See the Layout section.
+**v4 "Fluid Terminal"** keeps v3's information architecture and behavioural rules unchanged and softens the **visual geometry**: v2/v3's flat 0px corners become a modest rounded scale (crisp on dense surfaces — tables, inputs, badges — softer on cards and modals), the modal's hard offset shadow becomes a blurred elevation shadow, and the two self-hosted type families move from Space Grotesk / JetBrains Mono to **IBM Plex Sans Thai** / **IBM Plex Mono** — the Sans Thai family adds first-class Thai-script support (matched metrics with its own Latin glyphs, so an English/Thai mixed string never mixes x-heights) alongside the same numeric mono. See "What changed from v3" below for the full list; everything under Colours/Layout/Do's and Don'ts that isn't called out there is unchanged from v3.
+
+**v3 "Unified Terminal"** kept the v2 visual language unchanged (colours, typography, cards, tables below) and changed the **information architecture**: an overview dashboard at `/` plus a dedicated route per surface. A selected symbol opens its workspace at `/profiles/:id/symbols/:SYMBOL` (a full-width view with a symbol switch rail, `?tab` selecting trade/orders/market/logs); every per-profile editor (config, api-key, notifications, discovery, risk, bulk-order) and history, and backtest are their own routes, reached with `‹ Back`. Plus the new-profile wizard, login/onboarding, and the System utility pages. See the Layout section.
+
+## What changed from v3
+
+- **Corners:** flat 0px → a modest rounded scale (`xs` 4px badges, `sm` 6px buttons/inputs, `md` 8px, `lg` 12px cards, `xl` 16px, `2xl`/`3xl` for larger surfaces). Dots, pills, and switches keep `rounded-full` as before — nothing there changed.
+- **Shadow:** the modal's hard offset (`6px 6px 0 #000`) → a soft blurred elevation shadow (two stacked low-opacity blurred layers). Still the only shadow in the system — one deliberate elevation signal, not per-surface tuning.
+- **Type:** Space Grotesk Variable / JetBrains Mono Variable → **IBM Plex Sans Thai** / **IBM Plex Mono**, both self-hosted via `@fontsource` (per-weight static files, not variable — IBM Plex doesn't ship variable builds). IBM Plex Sans Thai's weight files each bundle Latin + Thai (+ cyrillic-ext) glyphs as separate `@font-face` `unicode-range` blocks under one family name, so importing it is enough for both scripts — no separate Thai stack, no mismatched metrics when a string mixes English and Thai.
+- **Density and behaviour are unchanged.** This is a corner-and-shadow-and-type pass, not a re-architecture — colours, layout, panels, tables, and every product rule below carry forward from v3 as-is.
 
 v2 superseded **v1 "Operator Console"**; v1's _behavioural_ rules carry forward unchanged. v2 replaced the _visual language_ with a Bauhaus-inspired terminal aesthetic (reference: a TRADEX terminal mock and PRD supplied by the operator — used as a direction, not copied).
 
@@ -139,7 +155,7 @@ Light theme remains a functional fallback (`[data-theme='light']`): same semanti
 
 ## Typography
 
-Two self-hosted variable families (`@fontsource-variable/*`, no CDN): **Space Grotesk** for everything readable — prose, labels, headings, buttons. **JetBrains Mono** for numbers and code — prices, amounts, P/L, timestamps, ids — always with `"tnum" 1, "zero" 1` via the `.font-mono` utility.
+Two self-hosted static families (`@fontsource/*`, no CDN — IBM Plex doesn't ship variable builds, so each weight is its own imported file: 400/500/600/700 for each family): **IBM Plex Sans Thai** for everything readable — prose, labels, headings, buttons. One family renders both English and Thai with matched metrics, so a mixed-language string (e.g. a Thai label next to an English ticker) never mixes x-heights or baselines. **IBM Plex Mono** for numbers and code — prices, amounts, P/L, timestamps, ids — always with `"tnum" 1, "zero" 1` via the `.font-mono` utility.
 
 Terminal case rules: buttons, badges, table column headers, nav items, and panel micro-labels are **uppercase, 11–12px, letter-spaced**. Page headings and body prose stay sentence case — a wall of caps is hostile to a non-pro reader.
 
@@ -164,7 +180,7 @@ Terminal case rules: buttons, badges, table column headers, nav items, and panel
   | System | Account, Dust transfer, Backup & restore, Orphan orders | side nav |
 
 - **Page shell.** Every non-overview surface shares one shell: `Page` (vertical rhythm; the app shell owns the padding) + `PageHeader` (title, optional profile-name meta, optional `‹ Back`). No "back to terminal" wording. Login, onboarding, and the new-profile wizard are full-screen flows.
-- **Panels.** Every editor/settings section is one `Panel` (`shared/components/panel.tsx`): a `bg-elevated` box, 1px `border`, **square corners**, then a header (title + optional one-line description) over a `border` hairline, then the body at `p-4`. Depth = border + fill ramp; no shadow except the modal offset. This is the single section container across config, risk, notifications, gate, discovery, and the account pages. Panels stack in a `space-y-4`/`space-y-6` column and span the surface full width — no `max-w-*` cap on editor pages, and no page-level box wrapping a stack of panels (the panel border is the only section chrome).
+- **Panels.** Every editor/settings section is one `Panel` (`shared/components/panel.tsx`): a `bg-elevated` box, 1px `border`, **`rounded-lg` corners**, then a header (title + optional one-line description) over a `border` hairline, then the body at `p-4`. Depth = border + fill ramp; no shadow except the modal elevation. This is the single section container across config, risk, notifications, gate, discovery, and the account pages. Panels stack in a `space-y-4`/`space-y-6` column and span the surface full width — no `max-w-*` cap on editor pages, and no page-level box wrapping a stack of panels (the panel border is the only section chrome).
   - **Collapsible only if it already was.** A panel shows a chevron and renders a `<details>` disclosure ONLY when its content was already collapsible; content that was always visible stays a static `<section>` header. The chevron must never lie about what a click does.
   - **Open by default.** A collapsible panel holding live/enabled config opens on first render (`defaultOpen`) so the operator reads its values without a click. The deliberately-tucked "Advanced settings" fold is the one exception and stays collapsed.
   - **Generated forms.** The config `AutoForm` is the reference: object groups are collapsible panels, loose top-level fields bucket into one static "Core settings" panel, and `@ui:advanced` fields fold under one closed "Advanced settings" disclosure.
@@ -186,8 +202,8 @@ Terminal case rules: buttons, badges, table column headers, nav items, and panel
 
 **Don't**
 
-- Don't round corners (dots, pills, and switch thumbs are the only circles).
-- Don't add soft shadows, blur, or gradients; the only shadow is the hard offset on modals.
+- Don't reach past the `rounded` scale — badges/inputs/buttons stay tight (`xs`/`sm`), cards and modals stay `lg`/`xl`. No ad hoc radius values, and no fully-rounded surfaces beyond dots, pills, and switch thumbs.
+- Don't add gradients or a second shadow; the only shadow is the elevation blur on modals, and it isn't reused elsewhere.
 - Don't uppercase prose or page headings.
 - Don't nest a `Panel` in a `Card`, wrap a column of panels in a page-level box, or give a collapse chevron to content that was never collapsible.
 - Don't sum test and live funds into one number.

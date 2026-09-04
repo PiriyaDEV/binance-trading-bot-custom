@@ -24,6 +24,8 @@ import { opsNotifyRouter } from './ops-notify.js';
 import { workerCronsRouter } from './worker-crons.js';
 import { exchangeInfoRouter } from './exchange-info.js';
 import { marketTrendRouter } from './market-trend.js';
+import { fxRateRouter } from './fx-rate.js';
+import { presetBacktestPreviewsRouter } from './preset-backtest-previews.js';
 import { backupRouter } from './backup.js';
 import { technicalsHealthRouter } from './technicals-health.js';
 import { retentionStatusRouter } from './retention-status.js';
@@ -76,6 +78,8 @@ export const mountApiRouters = (app: ApiHono, di: DI): void => {
   app.route('/api', workerCronsRouter(di));
   app.route('/api', exchangeInfoRouter(di));
   app.route('/api', marketTrendRouter(di));
+  app.route('/api', fxRateRouter(di));
+  app.route('/api', presetBacktestPreviewsRouter(di));
   app.route('/api', backupRouter(di));
   app.route('/api', technicalsHealthRouter(di));
   app.route('/api', retentionStatusRouter(di));

@@ -111,7 +111,7 @@ function ProfilesSheetList({
                             activeProps={{ className: cn(ROW, 'font-medium text-accent') }}
                           >
                             <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                            <span className="truncate">{item.label}</span>
+                            <span className="truncate">{t(item.labelKey)}</span>
                           </Link>
                         ),
                       )}

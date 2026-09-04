@@ -11,6 +11,7 @@ import type React from 'react';
 
 import { fetchMarketTrend, marketTrendQueryKey } from '@/features/dashboard/api/market-trend';
 import { TableSkeleton } from '@/shared/components/page-skeleton';
+import { t, type I18nKey } from '@/shared/lib/i18n';
 import type { MarketRegime, MarketTrendSymbol } from '@app/contracts';
 
 /**
@@ -47,22 +48,27 @@ function freshnessLabel(computedAtMs: number, nowMs: number): { text: string; wa
     // Clamp to the cron period: if the worker clock runs ahead of the browser,
     // raw secsLeft can exceed the period and show a confusing ">60s".
     const shown = Math.min(secsLeft, Math.ceil(CRON_PERIOD_MS / 1000));
-    return { text: `Next update in ~${shown}s`, warn: false };
+    return { text: t('market_trend.next_update', { seconds: shown }), warn: false };
   }
   if (nowMs - computedAtMs > STALE_AFTER_MS) {
-    return { text: 'Updates stopped. Restart the worker.', warn: true };
+    return { text: t('market_trend.updates_stopped'), warn: true };
   }
-  return { text: 'Checking…', warn: false };
+  return { text: t('market_trend.checking'), warn: false };
 }
 
 // Regime labels match the trade wording the rest of the app uses internally;
 // the arrow glyph and colour carry the plain-language read alongside.
-const REGIME_META: Readonly<Record<MarketRegime, { tone: string; glyph: string; label: string }>> =
-  {
-    bull: { tone: 'text-success', glyph: '▲', label: 'Bull' },
-    bear: { tone: 'text-danger', glyph: '▼', label: 'Bear' },
-    neutral: { tone: 'text-muted-fg', glyph: '◆', label: 'Neutral' },
-  };
+// `labelKey`, not a resolved string: this is a module-level constant
+// (evaluated once at import time), so a `t()` call here would freeze in
+// whatever locale was active on first load — see `SymbolRow`, which resolves
+// it with `t()` at render time instead.
+const REGIME_META: Readonly<
+  Record<MarketRegime, { tone: string; glyph: string; labelKey: I18nKey }>
+> = {
+  bull: { tone: 'text-success', glyph: '▲', labelKey: 'market_trend.regime.bull' },
+  bear: { tone: 'text-danger', glyph: '▼', labelKey: 'market_trend.regime.bear' },
+  neutral: { tone: 'text-muted-fg', glyph: '◆', labelKey: 'market_trend.regime.neutral' },
+};
 
 /** Compact price with a $ sign: 4 dp under $10 (alt prices), grouped above. */
 function formatPrice(value: string): string {
@@ -83,8 +89,9 @@ function pctVsSma50(sym: MarketTrendSymbol): string {
   const ma = Number(sym.sma50);
   if (!Number.isFinite(last) || !Number.isFinite(ma) || ma === 0) return '—';
   const ratio = (last / ma - 1) * 100;
-  const direction = ratio >= 0 ? 'above' : 'below';
-  return `${Math.abs(ratio).toFixed(1)}% ${direction} 50-day avg`;
+  return t(ratio >= 0 ? 'market_trend.vs_sma50.above' : 'market_trend.vs_sma50.below', {
+    pct: Math.abs(ratio).toFixed(1),
+  });
 }
 
 /**
@@ -98,12 +105,10 @@ function verdict(symbols: readonly MarketTrendSymbol[], percentUp: number): stri
   const bears = symbols.filter((s) => s.regime === 'bear').length;
   const bulls = symbols.filter((s) => s.regime === 'bull').length;
   const mostDown = percentUp < 50;
-  if (n > 0 && bears === n && mostDown)
-    return 'Weak market — Bitcoin and Ethereum are both falling and most coins are down today.';
-  if (n > 0 && bulls === n && !mostDown)
-    return 'Strong market — Bitcoin and Ethereum are both rising and most coins are up today.';
-  if (mostDown) return 'Mixed and cautious — most coins are down today.';
-  return 'Mixed — no clear direction right now.';
+  if (n > 0 && bears === n && mostDown) return t('market_trend.verdict.weak');
+  if (n > 0 && bulls === n && !mostDown) return t('market_trend.verdict.strong');
+  if (mostDown) return t('market_trend.verdict.cautious');
+  return t('market_trend.verdict.mixed');
 }
 
 function SymbolRow({ sym }: { sym: MarketTrendSymbol }) {
@@ -120,7 +125,7 @@ function SymbolRow({ sym }: { sym: MarketTrendSymbol }) {
           className={`text-xs font-semibold ${meta.tone}`}
           data-testid={`market-trend-${sym.symbol}-regime`}
         >
-          {meta.glyph} {meta.label}
+          {meta.glyph} {t(meta.labelKey)}
         </span>
       </div>
       <div className="text-right">
@@ -142,13 +147,19 @@ function BreadthRow({
 }) {
   const mostDown = percentUp < 50;
   const tone = mostDown ? 'text-warning' : 'text-success';
-  const barTone = mostDown ? 'bg-warning' : 'bg-success';
+  // Gradient fill (deeper → the theme colour) instead of the flat tint used
+  // elsewhere: this bar is the one "insight" read-out on the card, so it
+  // earns the same gradient treatment as the hero P/L number.
+  const barTone = mostDown
+    ? 'bg-gradient-to-r from-warning/60 to-warning'
+    : 'bg-gradient-to-r from-success/60 to-success';
   return (
     <div className="flex flex-col gap-1 bg-bg-elevated p-3" data-testid="market-trend-breadth">
       <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-fg">Coins rising (24h)</span>
+        <span className="text-muted-fg">{t('market_trend.breadth.title')}</span>
         <span className={`font-semibold tabular-nums ${tone}`}>
-          {percentUp.toFixed(0)}% rising · {mostDown ? 'Cautious' : 'Upbeat'}
+          {t('market_trend.breadth.rising', { pct: percentUp.toFixed(0) })} ·{' '}
+          {t(mostDown ? 'market_trend.breadth.cautious' : 'market_trend.breadth.upbeat')}
         </span>
       </div>
       <div
@@ -157,7 +168,7 @@ function BreadthRow({
         aria-valuenow={Math.round(percentUp)}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label={`Market breadth: ${upCount} of ${total} pairs up over 24 hours`}
+        aria-label={t('market_trend.breadth.aria', { upCount, total })}
       >
         <div className={`h-full ${barTone}`} style={{ width: `${percentUp}%` }} />
       </div>
@@ -180,11 +191,11 @@ function Shell({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <section
       className="@container space-y-2"
-      aria-label="Market trend"
+      aria-label={t('market_trend.title')}
       data-testid="market-trend-card"
     >
       <h2 className="text-[11px] font-semibold tracking-wider text-muted-fg uppercase">
-        Market trend
+        {t('market_trend.title')}
       </h2>
       {children}
     </section>
@@ -227,7 +238,7 @@ export function MarketTrendCard(): React.JSX.Element | null {
           className="text-xs text-muted-fg"
           data-testid={q.error ? 'market-trend-error' : 'market-trend-warming'}
         >
-          {q.error ? 'Market trend unavailable.' : 'Getting the latest market data…'}
+          {t(q.error ? 'market_trend.error' : 'market_trend.warming')}
         </p>
       </Shell>
     );
@@ -263,10 +274,7 @@ export function MarketTrendCard(): React.JSX.Element | null {
         </p>
       ) : (
         <div className="flex items-center justify-between gap-2 text-[11px]">
-          <p className="text-muted-fg">
-            The overall market mood. It&apos;s context, not a buy or sell signal — your bot still
-            decides each coin on its own.
-          </p>
+          <p className="text-muted-fg">{t('market_trend.footnote')}</p>
           <span className="shrink-0 text-muted-fg tabular-nums" data-testid="market-trend-age">
             {freshness.text}
           </span>
