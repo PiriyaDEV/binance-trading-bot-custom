@@ -22,24 +22,44 @@ import { t } from '@/shared/lib/i18n';
 import { EnablementPolicy, ProfileCreate } from '@app/contracts';
 import type {
   BacktestInterval,
+  BacktestResult,
   BacktestRunDetail,
-  OutOfSampleSegment,
   StrategyDescriptor,
 } from '@app/contracts';
 
 /**
  * The same defaults `EnablementPolicy` ships (`minProfitFactor: 1.1`,
- * `minAlphaVsHoldPct: 0`) — parsed rather than re-typed as magic numbers, so
- * this can never drift from the real Live-gate's own bar.
+ * `minTrades: 100`, `minAlphaVsHoldPct: 0`, `minOutOfSampleTrades: 20`) —
+ * parsed rather than re-typed as magic numbers, so this can never drift from
+ * the real Live-gate's own bar.
  */
 const GATE_DEFAULTS = EnablementPolicy.parse({});
 
-/** Whether a run's holdout clears the same profit-factor + alpha bars the Live-gate checks. Null holdout (window too short) never clears. */
-const clearsGate = (oos: OutOfSampleSegment | null): boolean =>
-  oos !== null &&
-  oos.profitFactor !== null &&
-  oos.profitFactor >= GATE_DEFAULTS.minProfitFactor &&
-  oos.alphaVsHoldPct >= GATE_DEFAULTS.minAlphaVsHoldPct;
+/**
+ * Whether a run clears every bar the real Live-gate checks (see
+ * `packages/contracts/src/enablement-gate.ts` `gateThresholdChecks`, the
+ * single source this mirrors): data coverage, in-sample profit factor /
+ * trade count / alpha, AND the same three out-of-sample. A run that only
+ * looks good on the holdout but not on the window as a whole (or vice versa)
+ * does not clear — matching the real gate exactly is the whole point of
+ * showing this badge before the operator ever reaches the real one.
+ */
+const clearsGate = (result: BacktestResult): boolean => {
+  const m = result.metrics;
+  const oos = result.outOfSample;
+  return (
+    result.dataWarnings.length === 0 &&
+    m.profitFactor !== null &&
+    m.profitFactor >= GATE_DEFAULTS.minProfitFactor &&
+    m.totalTrades >= GATE_DEFAULTS.minTrades &&
+    m.alphaVsHoldPct >= GATE_DEFAULTS.minAlphaVsHoldPct &&
+    oos !== null &&
+    oos.trades >= GATE_DEFAULTS.minOutOfSampleTrades &&
+    oos.profitFactor !== null &&
+    oos.profitFactor >= GATE_DEFAULTS.minProfitFactor &&
+    oos.alphaVsHoldPct >= GATE_DEFAULTS.minAlphaVsHoldPct
+  );
+};
 
 export interface SmartPresetPick {
   readonly symbol: string;
@@ -56,13 +76,15 @@ export interface SmartPresetPick {
  * window was too short to carve a holdout.
  */
 export interface SmartPresetRobustness {
+  /** The whole run's plain "how much money did this make" figure, net of fees — distinct from alpha (return relative to buy-and-hold). */
+  readonly totalReturnPct: number;
   readonly inSample: { readonly profitFactor: number | null; readonly alphaVsHoldPct: number };
   readonly outOfSample: {
     readonly profitFactor: number | null;
     readonly alphaVsHoldPct: number;
     readonly trades: number;
   } | null;
-  /** Whether the out-of-sample figures clear the Live-gate's own bars (profitFactor >= 1.1, alpha >= 0%). Undefined basis (null outOfSample) reads as not-cleared, not as passing by default. */
+  /** Whether the run clears every bar the real Live-gate checks — in-sample AND out-of-sample profit factor/alpha, trade counts, data coverage (see `clearsGate`). */
   readonly clearsGate: boolean;
 }
 
@@ -104,9 +126,9 @@ const awaitRun = async (
 };
 
 /**
- * Best interval among finished runs. Prefers a run whose out-of-sample
- * holdout clears the Live-gate's own bars (see `clearsGate`) — a candidate
- * with a great in-sample return but a losing holdout is the classic
+ * Best interval among finished runs. Prefers a run that clears every bar the
+ * real Live-gate checks (see `clearsGate`) — a candidate with a great
+ * in-sample return but a losing holdout, or vice versa, is the classic
  * curve-fit trap the wizard should not hand the operator. Among
  * gate-clearing runs, picks the higher total return; with none clearing it,
  * falls back to the higher out-of-sample profit factor (closest to robust)
@@ -123,7 +145,7 @@ const pickBestRun = (
   );
   if (finished.length === 0) return null;
 
-  const gateClearing = finished.filter((e) => clearsGate(e.run.result.outOfSample));
+  const gateClearing = finished.filter((e) => clearsGate(e.run.result));
   const pool = gateClearing.length > 0 ? gateClearing : finished;
   const rank = (e: (typeof finished)[number]): number =>
     gateClearing.length > 0
@@ -138,6 +160,7 @@ const robustnessOf = (run: BacktestRunDetail): SmartPresetRobustness => {
   const m = run.result!.metrics;
   const oos = run.result!.outOfSample;
   return {
+    totalReturnPct: m.totalReturnPct,
     inSample: { profitFactor: m.profitFactor, alphaVsHoldPct: m.alphaVsHoldPct },
     outOfSample:
       oos === null
@@ -147,7 +170,7 @@ const robustnessOf = (run: BacktestRunDetail): SmartPresetRobustness => {
             alphaVsHoldPct: oos.alphaVsHoldPct,
             trades: oos.trades,
           },
-    clearsGate: clearsGate(oos),
+    clearsGate: clearsGate(run.result!),
   };
 };
 

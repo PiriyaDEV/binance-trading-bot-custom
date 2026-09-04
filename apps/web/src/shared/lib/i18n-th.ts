@@ -413,11 +413,12 @@ export const th: Readonly<Record<string, string>> = {
   'wizard.preset.smart.robustness.misses':
     'ยังไม่ผ่านเกณฑ์ Live-gate ในช่วง out-of-sample — ผลดีเฉพาะในช่วงที่ทดสอบ ยังไม่ใช่หลักฐานว่าจะดีต่อเนื่องในอนาคต แนะนำให้ backtest เพิ่มเติมก่อนเปิดใช้งานจริง',
   'wizard.preset.smart.robustness.detail':
-    'In-sample: profit factor {inPf}, alpha {inAlpha}% ส่วน out-of-sample (ช่วงล่าสุด): profit factor {oosPf}, alpha {oosAlpha}%',
+    'กำไรรวม {totalReturn}% ตลอดช่วงที่ทดสอบ · In-sample: profit factor {inPf}, alpha {inAlpha}% ส่วน out-of-sample (ช่วงล่าสุด): profit factor {oosPf}, alpha {oosAlpha}%',
   'wizard.preset.smart.view': 'ดูโปรไฟล์',
-  'wizard.preset.preview.clears': 'เช็คล่าสุด {ago} · profit factor {pf} · ผ่านเกณฑ์ Live-gate',
+  'wizard.preset.preview.clears':
+    'เช็คล่าสุด {ago} · กำไร {totalReturn}% · profit factor {pf} · ผ่านเกณฑ์ Live-gate',
   'wizard.preset.preview.misses':
-    'เช็คล่าสุด {ago} · profit factor {pf} · ยังไม่ผ่านเกณฑ์ Live-gate',
+    'เช็คล่าสุด {ago} · กำไร {totalReturn}% · profit factor {pf} · ยังไม่ผ่านเกณฑ์ Live-gate',
   'wizard.smart.error.no_result':
     'Backtest ทุกครั้งล้มเหลวหรือหมดเวลา จึงเลือกอะไรไม่ได้ ลองใหม่อีกครั้ง หรือใช้ preset แบบตายตัวแทน',
   'wizard.smart.error.all_conflicted':

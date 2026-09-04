@@ -345,7 +345,11 @@ function PresetPreviewBadge({
         preview.robustness.clearsGate
           ? 'wizard.preset.preview.clears'
           : 'wizard.preset.preview.misses',
-        { ago: formatLastTick(preview.ranAt), pf: pf?.toFixed(2) ?? '—' },
+        {
+          ago: formatLastTick(preview.ranAt),
+          totalReturn: preview.robustness.totalReturnPct.toFixed(1),
+          pf: pf?.toFixed(2) ?? '—',
+        },
       )}
     </span>
   );
@@ -407,6 +411,7 @@ function SmartPresetProgressView({
           </p>
           <p className="mt-1 text-xs text-muted-fg">
             {t('wizard.preset.smart.robustness.detail', {
+              totalReturn: progress.robustness.totalReturnPct.toFixed(1),
               inPf: progress.robustness.inSample.profitFactor?.toFixed(2) ?? '—',
               inAlpha: progress.robustness.inSample.alphaVsHoldPct.toFixed(1),
               oosPf: progress.robustness.outOfSample?.profitFactor?.toFixed(2) ?? '—',

@@ -434,10 +434,12 @@ const en: Readonly<Record<string, string>> = {
   'wizard.preset.smart.robustness.misses':
     'Below the Live-gate’s bar out-of-sample — it looked good on the window tested, but that is not proof it holds up going forward. Consider backtesting further before enabling live.',
   'wizard.preset.smart.robustness.detail':
-    'In-sample: profit factor {inPf}, alpha {inAlpha}%. Out-of-sample (most recent slice): profit factor {oosPf}, alpha {oosAlpha}%.',
+    'Total return {totalReturn}% over the window. In-sample: profit factor {inPf}, alpha {inAlpha}%. Out-of-sample (most recent slice): profit factor {oosPf}, alpha {oosAlpha}%.',
   'wizard.preset.smart.view': 'View profile',
-  'wizard.preset.preview.clears': 'Checked {ago} · profit factor {pf} · clears the Live-gate',
-  'wizard.preset.preview.misses': 'Checked {ago} · profit factor {pf} · below the Live-gate',
+  'wizard.preset.preview.clears':
+    'Checked {ago} · {totalReturn}% return · profit factor {pf} · clears the Live-gate',
+  'wizard.preset.preview.misses':
+    'Checked {ago} · {totalReturn}% return · profit factor {pf} · below the Live-gate',
   'wizard.smart.error.no_result':
     'Every backtest failed or timed out, so nothing could be picked. Try again, or use one of the fixed presets instead.',
   'wizard.smart.error.all_conflicted':

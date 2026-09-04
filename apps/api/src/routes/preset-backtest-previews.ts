@@ -17,11 +17,13 @@ import {
 } from '@app/contracts';
 import { repo } from '@app/db';
 import { createRoute, z } from '@hono/zod-openapi';
+import type { Logger } from 'pino';
 
 import type { DI } from 'di.js';
 import { requireUser } from 'middleware/require-user.js';
 import { createApiHono, type ApiHono } from 'types.js';
 
+/** Throws on a malformed row — callers that can tolerate one bad preset (the list route) should prefer {@link toResponseLenient}. */
 const toResponse = (
   row: Awaited<ReturnType<typeof repo.presetBacktestPreviews.get>>,
 ): ReturnType<typeof PresetBacktestPreviewSchema.parse> | null => {
@@ -35,6 +37,28 @@ const toResponse = (
     windowDays: row.windowDays,
     ranAt: row.ranAt.toISOString(),
   });
+};
+
+/**
+ * Same projection, but a row whose stored `robustness` predates a schema
+ * change (e.g. a field this api version now requires) degrades to "no
+ * preview for this preset" instead of failing the whole list — the wizard
+ * writes a fresh row for that preset on its next backtest anyway. Mirrors
+ * `market-trend.ts`'s "malformed snapshot serves null" convention.
+ */
+const toResponseLenient = (
+  row: Awaited<ReturnType<typeof repo.presetBacktestPreviews.get>>,
+  logger: Logger,
+): ReturnType<typeof PresetBacktestPreviewSchema.parse> | null => {
+  try {
+    return toResponse(row);
+  } catch (err) {
+    logger.warn(
+      { err, presetId: row?.presetId },
+      'preset-backtest-previews: malformed stored row; omitting from the list',
+    );
+    return null;
+  }
 };
 
 const listRoute = createRoute({
@@ -77,8 +101,9 @@ export const presetBacktestPreviewsRouter = (di: DI): ApiHono => {
   app.use('/preset-backtest-previews/*', requireUser());
 
   app.openapi(listRoute, async (c) => {
+    const logger: Logger = di.logger;
     const rows = await repo.presetBacktestPreviews.list(di.db);
-    const previews = rows.map((r) => toResponse(r)).filter((r) => r !== null);
+    const previews = rows.map((r) => toResponseLenient(r, logger)).filter((r) => r !== null);
     return c.json({ previews }, 200);
   });
 

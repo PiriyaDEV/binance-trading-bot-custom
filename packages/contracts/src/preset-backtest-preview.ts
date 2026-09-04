@@ -11,9 +11,13 @@ export type PresetPick = z.infer<typeof PresetPickSchema>;
 /**
  * In-sample vs out-of-sample profit factor and alpha — the same figures the
  * Live-gate checks. `outOfSample` is null when the run's window was too
- * short to carve a holdout.
+ * short to carve a holdout. `totalReturnPct` is the whole run's plain
+ * "how much money did this make" figure (net of fees, the strategy's own
+ * balance growth over the full window) — the headline number an operator
+ * reads first, distinct from alpha (return relative to buy-and-hold).
  */
 export const PresetRobustnessSchema = z.object({
+  totalReturnPct: z.number(),
   inSample: z.object({
     profitFactor: z.number().nullable(),
     alphaVsHoldPct: z.number(),
