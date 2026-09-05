@@ -24,10 +24,9 @@ export function ProfileManageCard({
   // Retry incomplete Binance fee evidence in the background; History remains unavailable where the required valuation cannot be proven.
   const reconcileFees = useMutation({
     mutationFn: () => reconcileProfileFees(profileId),
-    onSuccess: () =>
-      toast.success('Reconciling fees from Binance — check History again in a moment.'),
+    onSuccess: () => toast.success(t('manage.reconcile_fees.success')),
     onError: (err: unknown) =>
-      toast.error(err instanceof Error ? err.message : 'Could not start fee reconciliation.'),
+      toast.error(err instanceof Error ? err.message : t('manage.reconcile_fees.error')),
   });
 
   return (
@@ -40,7 +39,7 @@ export function ProfileManageCard({
         onClick={onInvestigate}
       >
         <Stethoscope className="h-4 w-4 shrink-0" aria-hidden="true" />
-        <span className="truncate">Investigate</span>
+        <span className="truncate">{t('investigate.button.idle')}</span>
       </Button>
       {demoMode ? (
         <p className="text-sm text-muted-fg" data-testid="reconcile-fees-demo-unavailable">
@@ -55,7 +54,7 @@ export function ProfileManageCard({
           onClick={() => reconcileFees.mutate()}
         >
           <Receipt className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span className="truncate">Reconcile fees</span>
+          <span className="truncate">{t('manage.reconcile_fees.button')}</span>
         </Button>
       )}
     </div>

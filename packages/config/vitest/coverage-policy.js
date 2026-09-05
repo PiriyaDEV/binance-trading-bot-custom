@@ -33,6 +33,7 @@ export const COVERAGE_POLICY = Object.freeze({
   '@app/notify': active('unit', 100, 97),
   '@app/observability': active('unit', 82, 56),
   '@app/strategy-backtest': active('unit', 98, 85),
+  '@app/strategy-bridge-scout': active('unit', 100, 100),
   '@app/strategy-core': active('unit', 100, 100),
   '@app/strategy-momentum': active('unit', 100, 100),
   '@app/strategy-rebalance': active('unit', 100, 100),

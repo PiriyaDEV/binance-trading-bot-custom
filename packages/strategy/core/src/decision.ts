@@ -50,6 +50,16 @@ export interface OrderIntent {
    * from `reason`, so it never has to know a strategy's intent vocabulary.
    */
   readonly deferrable?: boolean;
+  /**
+   * Which side of the market this order opens or closes. Absent (the default)
+   * means `'LONG'` — every pre-existing strategy is long-only, so omitting
+   * this field reproduces the historical behaviour byte-for-byte. A `'SHORT'`
+   * SELL opens a short (the fill model permits selling base the account does
+   * not hold); a `'SHORT'` BUY covers one. Purely a hint for the executor/fill
+   * model — the strategy's own state (`PositionView.positionSide`) is the
+   * source of truth for which way an existing position already faces.
+   */
+  readonly positionSide?: 'LONG' | 'SHORT';
 }
 
 export interface OrderParams {

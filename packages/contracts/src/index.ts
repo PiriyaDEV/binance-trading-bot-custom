@@ -45,6 +45,8 @@ export * from './symbol-logs.js';
 export * from './technicals.js';
 export * from './technicals-recommendations.js';
 export * from './market-trend.js';
+export * from './fx-rate.js';
+export * from './preset-backtest-preview.js';
 export * from './form-builder.js';
 export * from './config-schema.js';
 export * from './config-doc.js';

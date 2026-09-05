@@ -246,17 +246,27 @@ function computeCalmar(cagrPct: number, maxDrawdownPct: number): number {
 }
 
 /**
- * Pair fills into realised round-trip slices using average-cost accounting:
- * each BUY adds to the position cost basis; each SELL realises P&L against the
- * average cost of the portion it closes. Handles grid strategies that stack
- * several buys before selling. The fee on each fill is folded into cost
- * (buys) or netted from proceeds (sells).
+ * Pair fills into realised round-trip slices using average-cost accounting.
+ * `direction` is derived from whichever side OPENED the position — a fresh
+ * BUY opens long (profits when price rises), a fresh SELL opens short
+ * (profits when price falls); a fill on the same side adds to the position,
+ * one on the opposite side realises P&L against the average entry price of
+ * the portion it closes. Handles grid strategies that stack several
+ * same-side fills before closing, in either direction.
+ *
+ * Fee handling is direction-symmetric by construction: `priceCost` tracks the
+ * fee-free notional (used for `avgEntryPrice`/display) and `openFees` tracks
+ * fees paid while opening, pro-rated onto whatever portion later closes —
+ * verified algebraically identical to the pre-short long-only formula
+ * (`proceeds - costOfSold` where `costOfSold` folded fee into cost), so the
+ * long-only path here is byte-for-byte unchanged, not merely equivalent.
  */
 function pairTrades(trades: readonly BacktestTrade[]): ClosedTrade[] {
   interface Position {
-    qty: Decimal;
-    cost: Decimal; // total cost basis of the open qty (incl. buy fees)
-    priceCost: Decimal; // total cost basis EXCLUDING fees (sum of price*qty)
+    qty: Decimal; // magnitude, always >= 0
+    direction: 1 | -1; // 1 = long, -1 = short; meaningless while qty is 0
+    priceCost: Decimal; // fee-free notional of the open qty (sum of price*qty)
+    openFees: Decimal; // fees paid opening the still-open qty
     openTsMs: number;
   }
   const positions = new Map<string, Position>();
@@ -266,52 +276,60 @@ function pairTrades(trades: readonly BacktestTrade[]): ClosedTrade[] {
     const qty = new Decimal(t.qty);
     const price = new Decimal(t.price);
     const fee = new Decimal(t.feeQuote);
+    const fillDirection: 1 | -1 = t.side === 'BUY' ? 1 : -1;
     const pos = positions.get(t.symbol) ?? {
       qty: ZERO,
-      cost: ZERO,
+      direction: fillDirection,
       priceCost: ZERO,
+      openFees: ZERO,
       openTsMs: t.tsMs,
     };
 
-    if (t.side === 'BUY') {
-      if (pos.qty.lte(0)) pos.openTsMs = t.tsMs; // opening a fresh position
+    const isOpeningOrAdding = pos.qty.lte(0) || pos.direction === fillDirection;
+    if (isOpeningOrAdding) {
+      if (pos.qty.lte(0)) {
+        pos.direction = fillDirection; // a flat position takes its direction from this fill
+        pos.openTsMs = t.tsMs;
+      }
       pos.qty = pos.qty.add(qty);
-      pos.cost = pos.cost.add(price.mul(qty).add(fee));
       pos.priceCost = pos.priceCost.add(price.mul(qty));
+      pos.openFees = pos.openFees.add(fee);
       positions.set(t.symbol, pos);
       continue;
     }
 
-    // SELL: realise against average cost of the sold portion. `cost` (incl. fees)
-    // drives P&L exactly as before; `priceCost` is a parallel fee-free accumulator
-    // used only to split the closed portion into a display entry price and the
-    // buy fees attributed to it — it never touches `pnl`.
-    if (pos.qty.lte(0)) continue; // sell with no position — nothing to realise
-    const soldQty = Decimal.min(qty, pos.qty);
-    const avgCost = pos.cost.div(pos.qty);
-    const costOfSold = avgCost.mul(soldQty);
-    const proceeds = price.mul(soldQty).sub(fee);
-    const pnl = proceeds.sub(costOfSold);
-    const avgEntryPrice = pos.qty.lte(0) ? ZERO : pos.priceCost.div(pos.qty);
-    const priceOfSold = avgEntryPrice.mul(soldQty);
+    // Opposite side of an open position: realise against the average entry
+    // price of the closed portion.
+    if (pos.qty.lte(0)) continue; // closing fill with no position — nothing to realise
+    const closedQty = Decimal.min(qty, pos.qty);
+    const avgEntryPrice = pos.priceCost.div(pos.qty);
+    const priceOfClosed = avgEntryPrice.mul(closedQty);
+    const openFeeShare = pos.openFees.mul(closedQty).div(pos.qty);
+    // Long: profits when price rises above entry. Short: profits when price
+    // falls below entry — the sign flip is the ENTIRE direction-specific
+    // logic; everything else (fee attribution, display fields) is shared.
+    const grossPnl =
+      pos.direction === 1
+        ? price.sub(avgEntryPrice).mul(closedQty)
+        : avgEntryPrice.sub(price).mul(closedQty);
+    const pnl = grossPnl.sub(openFeeShare).sub(fee);
+    const costOfClosed = priceOfClosed.add(openFeeShare);
     closed.push({
       symbol: t.symbol,
       pnl,
-      returnFraction: costOfSold.lte(0) ? ZERO : pnl.div(costOfSold),
+      returnFraction: costOfClosed.lte(0) ? ZERO : pnl.div(costOfClosed),
       durationMs: t.tsMs - pos.openTsMs,
       openTsMs: pos.openTsMs,
       closeTsMs: t.tsMs,
       entryPrice: avgEntryPrice,
       exitPrice: price,
-      qty: soldQty,
-      // Buy fees attributed to the closed portion (costOfSold includes fees,
-      // priceOfSold excludes them) plus this sell's fee.
-      feeQuote: costOfSold.sub(priceOfSold).add(fee),
+      qty: closedQty,
+      feeQuote: openFeeShare.add(fee),
       exitReason: t.reason,
     });
-    pos.qty = pos.qty.sub(soldQty);
-    pos.cost = pos.cost.sub(costOfSold);
-    pos.priceCost = pos.priceCost.sub(priceOfSold);
+    pos.qty = pos.qty.sub(closedQty);
+    pos.priceCost = pos.priceCost.sub(priceOfClosed);
+    pos.openFees = pos.openFees.sub(openFeeShare);
     positions.set(t.symbol, pos);
   }
 

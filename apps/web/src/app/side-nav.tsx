@@ -250,7 +250,7 @@ export function SideNav({
                               key={item.to}
                               to={item.to}
                               params={{ accountId, profileId: p.profileId }}
-                              label={item.label}
+                              label={t(item.labelKey)}
                               collapsed={false}
                               // Overview is the profile route itself; without an exact
                               // match it would stay lit on every section beneath it.

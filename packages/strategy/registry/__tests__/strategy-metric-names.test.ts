@@ -82,6 +82,9 @@ const harvest = (): Harvest => {
 // an addition, so neither a dropped dashboard series nor an unreviewed new one
 // can land quietly.
 const LITERAL_NAMES: readonly string[] = [
+  'bridgescout.decision',
+  'bridgescout.jump',
+  'bridgescout.jump-complete',
   'momentum.entry',
   'momentum.exit',
   'momentum.skip',

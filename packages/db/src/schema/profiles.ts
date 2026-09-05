@@ -1,5 +1,15 @@
 import { sql } from 'drizzle-orm';
-import { boolean, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  check,
+  jsonb,
+  pgTable,
+  smallint,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import { accounts } from './accounts.js';
 
 export const profiles = pgTable(
@@ -25,6 +35,12 @@ export const profiles = pgTable(
     // Operator-settable per profile and live-reloadable (the discovery cron
     // re-reads it each tick).
     quoteAsset: text('quote_asset').notNull().default('USDT'),
+    // Fixed low leverage for a futures-mode profile (the app's own safety cap,
+    // not Binance's full 1-125x range) — 1, 2, or 3. Null for a spot profile.
+    // Profile-scoped, not account-scoped, because Binance's `setLeverage` is
+    // itself per-symbol and profiles are the natural "which symbols" boundary
+    // (mirrors `quoteAsset`: operator-settable post-creation, not a wizard step).
+    leverage: smallint('leverage'),
     // Equity-benchmark mode for the dashboard's "vs holding" line: 'btc' (legacy
     // BTC hold) or 'basket' (equal-weight hold of the profile's own traded
     // symbols — the honest "did I beat the coins I picked" comparator). First-
@@ -64,7 +80,13 @@ export const profiles = pgTable(
       .defaultNow()
       .$onUpdate(() => new Date()),
   },
-  (table) => [uniqueIndex('profiles_account_name_uniq').on(table.accountId, table.name)],
+  (table) => [
+    uniqueIndex('profiles_account_name_uniq').on(table.accountId, table.name),
+    check(
+      'profiles_leverage_chk',
+      sql`${table.leverage} is null or ${table.leverage} between 1 and 3`,
+    ),
+  ],
 );
 
 export type ProfileRow = typeof profiles.$inferSelect;

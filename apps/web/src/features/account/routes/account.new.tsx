@@ -25,10 +25,20 @@ function AccountNewPage(): ReactNode {
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [mode, setMode] = useState<'test' | 'live'>('test');
+  const [marketType, setMarketType] = useState<'spot' | 'futures'>('spot');
   const [nameError, setNameError] = useState<string | null>(null);
 
+  // Futures is testnet-only in this app (same standing rule as everything
+  // else — no real money). Switching to Futures forces the environment back
+  // to Testnet rather than just disabling submit, so the two controls never
+  // sit in a combination the server would reject.
+  const onMarketTypeChange = (next: 'spot' | 'futures'): void => {
+    setMarketType(next);
+    if (next === 'futures') setMode('test');
+  };
+
   const create = useMutation({
-    mutationFn: () => createAccount({ name: name.trim(), binanceMode: mode }),
+    mutationFn: () => createAccount({ name: name.trim(), binanceMode: mode, marketType }),
     onSuccess: async (account) => {
       await queryClient.invalidateQueries({ queryKey: accountsQueryKey });
       setActiveAccountId(account.id);
@@ -41,7 +51,11 @@ function AccountNewPage(): ReactNode {
 
   const onSubmit = (e: FormEvent): void => {
     e.preventDefault();
-    const parsed = AccountCreate.safeParse({ name: name.trim(), binanceMode: mode });
+    const parsed = AccountCreate.safeParse({
+      name: name.trim(),
+      binanceMode: mode,
+      marketType,
+    });
     if (!parsed.success) {
       setNameError(parsed.error.issues[0]?.message ?? 'Invalid name');
       return;
@@ -74,6 +88,24 @@ function AccountNewPage(): ReactNode {
             </div>
 
             <fieldset className="space-y-2">
+              <legend className="text-xs font-medium">Market</legend>
+              <MarketTypeOption
+                value="spot"
+                checked={marketType === 'spot'}
+                onChange={onMarketTypeChange}
+                label="Spot"
+                help="Buy and hold coins. No leverage, no shorting."
+              />
+              <MarketTypeOption
+                value="futures"
+                checked={marketType === 'futures'}
+                onChange={onMarketTypeChange}
+                label="Futures"
+                help="Long or short with fixed 1x-3x leverage. Testnet only — needs a separate Futures Testnet API key from testnet.binancefuture.com."
+              />
+            </fieldset>
+
+            <fieldset className="space-y-2">
               <legend className="text-xs font-medium">Environment</legend>
               <ModeOption
                 value="test"
@@ -87,7 +119,12 @@ function AccountNewPage(): ReactNode {
                 checked={mode === 'live'}
                 onChange={setMode}
                 label="Live"
-                help="Real funds on the live Binance exchange."
+                help={
+                  marketType === 'futures'
+                    ? 'Not available for Futures accounts — testnet only.'
+                    : 'Real funds on the live Binance exchange.'
+                }
+                disabled={marketType === 'futures'}
               />
             </fieldset>
 
@@ -122,10 +159,47 @@ function ModeOption({
   onChange,
   label,
   help,
+  disabled,
 }: {
   value: 'test' | 'live';
   checked: boolean;
   onChange: (next: 'test' | 'live') => void;
+  label: string;
+  help: string;
+  disabled?: boolean;
+}): ReactNode {
+  return (
+    <label
+      className={`flex items-start gap-3 rounded-xs border border-border p-3 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+    >
+      <input
+        type="radio"
+        name="binance-mode"
+        value={value}
+        checked={checked}
+        onChange={() => onChange(value)}
+        disabled={disabled}
+        className="mt-0.5"
+        data-testid={`account-mode-${value}`}
+      />
+      <span className="flex flex-col gap-0.5">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-xs text-muted-fg">{help}</span>
+      </span>
+    </label>
+  );
+}
+
+function MarketTypeOption({
+  value,
+  checked,
+  onChange,
+  label,
+  help,
+}: {
+  value: 'spot' | 'futures';
+  checked: boolean;
+  onChange: (next: 'spot' | 'futures') => void;
   label: string;
   help: string;
 }): ReactNode {
@@ -133,12 +207,12 @@ function ModeOption({
     <label className="flex cursor-pointer items-start gap-3 rounded-xs border border-border p-3">
       <input
         type="radio"
-        name="binance-mode"
+        name="market-type"
         value={value}
         checked={checked}
         onChange={() => onChange(value)}
         className="mt-0.5"
-        data-testid={`account-mode-${value}`}
+        data-testid={`account-market-type-${value}`}
       />
       <span className="flex flex-col gap-0.5">
         <span className="text-sm font-medium">{label}</span>

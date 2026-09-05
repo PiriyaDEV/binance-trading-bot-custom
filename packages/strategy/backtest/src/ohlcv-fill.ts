@@ -10,6 +10,12 @@ import type {
 } from './types.js';
 
 const BPS = new Decimal(10_000);
+// The app's own fixed leverage ceiling for a futures-mode profile (see the
+// session's Futures-support plan) — used here only as a backstop bound on how
+// much notional a short-opening SELL may take against available quote, since
+// a short has no base holding to size against. Not a live-order concept; a
+// real futures account's own leverage setting is a wholly separate control.
+const MAX_LEVERAGE = 3;
 
 /**
  * Refuse an order type this model cannot simulate.
@@ -125,7 +131,18 @@ export class OhlcvFillModel implements FillModel {
     const { intent, params, symbolInfo } = input;
     assertSupportedType(params.type);
     const qty = new Decimal(params.quantity);
-    if (intent.side === 'SELL') return { asset: symbolInfo.baseAsset, amount: qty };
+    if (intent.side === 'SELL') {
+      // A short-opening/adding SELL delivers no base asset (there is none to
+      // hold) — nothing to reserve. The margin-style ceiling that bounds how
+      // much such a SELL may actually fill for lives in `affordableQty`, not
+      // here; this only prevents a resting SELL from locking base it does not
+      // have, which would otherwise clamp `lockUpTo` to zero and starve the
+      // fill.
+      if (intent.positionSide === 'SHORT') {
+        return { asset: symbolInfo.baseAsset, amount: new Decimal(0) };
+      }
+      return { asset: symbolInfo.baseAsset, amount: qty };
+    }
     const price = new Decimal(params.price ?? params.stopPrice ?? '0').mul(
       this.spreadFactor('BUY'),
     );
@@ -167,6 +184,7 @@ export class OhlcvFillModel implements FillModel {
     if (
       !this.canFundAtOrderPrice(
         intent.side,
+        intent.positionSide,
         requestedQty,
         params,
         price,
@@ -182,6 +200,7 @@ export class OhlcvFillModel implements FillModel {
     // free (an all-in buy), this shrinks it to a partial rather than overdrawing.
     const affordable = this.affordableQty(
       intent.side,
+      intent.positionSide,
       requestedQty,
       price,
       feeBps,
@@ -289,6 +308,7 @@ export class OhlcvFillModel implements FillModel {
    */
   private canFundAtOrderPrice(
     side: OrderSide,
+    positionSide: 'LONG' | 'SHORT' | undefined,
     qty: Decimal,
     params: FillInput['params'],
     fillPrice: Decimal,
@@ -297,6 +317,11 @@ export class OhlcvFillModel implements FillModel {
     symbolInfo: FillInput['symbolInfo'],
   ): boolean {
     if (side === 'SELL') {
+      // A short-opening/adding SELL needs no base — it delivers a borrowed
+      // asset, not a held one. `affordableQty` bounds the size against
+      // available margin instead; this gate only guards a normal (long-exit)
+      // SELL, which must hold what it sells.
+      if (positionSide === 'SHORT') return true;
       const base = account.balances[symbolInfo.baseAsset]?.free ?? new Decimal(0);
       return base.gte(qty);
     }
@@ -310,6 +335,7 @@ export class OhlcvFillModel implements FillModel {
   /** Quantity the account can transact, possibly less than requested (→ partial). */
   private affordableQty(
     side: OrderSide,
+    positionSide: 'LONG' | 'SHORT' | undefined,
     requestedQty: Decimal,
     price: Decimal,
     feeBps: number,
@@ -323,6 +349,16 @@ export class OhlcvFillModel implements FillModel {
       if (unitCost.lte(0)) return new Decimal(0);
       const maxByBalance = roundToStep(quote.div(unitCost), step);
       return Decimal.min(requestedQty, maxByBalance);
+    }
+    if (positionSide === 'SHORT') {
+      // No base to size against — bound instead by margin: quote free times
+      // the app's fixed leverage ceiling, converted to base at this price.
+      // A backstop, not the primary sizing control (the strategy sizes its
+      // own short notional, same as it sizes a long entry).
+      const quote = account.balances[symbolInfo.quoteAsset]?.free ?? new Decimal(0);
+      if (price.lte(0)) return new Decimal(0);
+      const maxByMargin = roundToStep(quote.mul(MAX_LEVERAGE).div(price), step);
+      return Decimal.min(requestedQty, maxByMargin);
     }
     const base = account.balances[symbolInfo.baseAsset]?.free ?? new Decimal(0);
     return Decimal.min(requestedQty, roundToStep(base, step));

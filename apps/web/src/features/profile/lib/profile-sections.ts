@@ -2,6 +2,8 @@
 //
 // Labels come from the same i18n keys the pages title themselves with, so a nav row and the `<h1>` it lands on cannot drift apart. They used to be hardcoded here and four of them had already diverged (Strategy/"Strategy config", Risk/"Risk controls", Bulk order/"Bulk manual order", General/"Profile settings").
 //
+// This module stores the i18n KEY, not the resolved string: it is evaluated once at import time (a plain top-level `const`), so a `t()` call made here would freeze in whatever locale was active on first load and never update on a later locale switch. Each consumer (side nav, mobile sheet, breadcrumb) calls `t(item.labelKey)` itself, at render time, so it re-resolves on every render — including the one a locale switch forces.
+//
 // `icon` renders on every row; `group` orders them through NAV_GROUP_ORDER.
 
 import {
@@ -18,12 +20,12 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 
-import { t } from '@/shared/lib/i18n';
+import type { I18nKey } from '@/shared/lib/i18n';
 import type { DemoVisible } from '@/shared/lib/demo-visibility';
 
 export interface ProfileSectionItem extends DemoVisible {
   readonly to: string;
-  readonly label: string;
+  readonly labelKey: I18nKey;
   /** No `src/` consumer since the Manage menu's tiles went — it survives as the stable handle the ordering test names each section by, which is why it is not a slug of the path (gate → live-gate). */
   readonly testId: string;
   readonly icon: LucideIcon;
@@ -39,28 +41,28 @@ export const PROFILE_SECTIONS = [
     items: [
       {
         to: '/accounts/$accountId/profiles/$profileId/config',
-        label: t('edit.profile_config.title'),
+        labelKey: 'edit.profile_config.title',
         testId: 'config',
         demoHidden: false,
         icon: SlidersHorizontal,
       },
       {
         to: '/accounts/$accountId/profiles/$profileId/risk',
-        label: t('edit.risk.title'),
+        labelKey: 'edit.risk.title',
         testId: 'risk',
         demoHidden: false,
         icon: Shield,
       },
       {
         to: '/accounts/$accountId/profiles/$profileId/gate',
-        label: t('edit.gate.title'),
+        labelKey: 'edit.gate.title',
         testId: 'live-gate',
         demoHidden: false,
         icon: Gauge,
       },
       {
         to: '/accounts/$accountId/profiles/$profileId/discovery',
-        label: t('edit.discovery.title'),
+        labelKey: 'edit.discovery.title',
         testId: 'discovery',
         demoHidden: false,
         icon: Radar,
@@ -68,7 +70,7 @@ export const PROFILE_SECTIONS = [
       {
         // The only demo-hidden section: it reads and writes notifier providers, whose routes 403 for the demo operator.
         to: '/accounts/$accountId/profiles/$profileId/notifications',
-        label: t('edit.notifications.title'),
+        labelKey: 'edit.notifications.title',
         testId: 'notifications',
         demoHidden: true,
         icon: Bell,
@@ -80,14 +82,14 @@ export const PROFILE_SECTIONS = [
     items: [
       {
         to: '/accounts/$accountId/profiles/$profileId/backtest',
-        label: t('nav.backtest'),
+        labelKey: 'nav.backtest',
         testId: 'backtest',
         demoHidden: false,
         icon: FlaskConical,
       },
       {
         to: '/accounts/$accountId/profiles/$profileId/history',
-        label: t('nav.history'),
+        labelKey: 'nav.history',
         testId: 'history',
         demoHidden: false,
         icon: History,
@@ -99,7 +101,7 @@ export const PROFILE_SECTIONS = [
     items: [
       {
         to: '/accounts/$accountId/profiles/$profileId/bulk-order',
-        label: t('edit.bulk_order.title'),
+        labelKey: 'edit.bulk_order.title',
         testId: 'bulk-order',
         demoHidden: false,
         icon: ListPlus,
@@ -111,7 +113,7 @@ export const PROFILE_SECTIONS = [
     items: [
       {
         to: '/accounts/$accountId/profiles/$profileId/general',
-        label: t('edit.general.title'),
+        labelKey: 'edit.general.title',
         testId: 'general',
         demoHidden: false,
         icon: Settings,
@@ -125,7 +127,7 @@ export const PROFILE_SECTIONS = [
  */
 const PROFILE_OVERVIEW_ITEM = {
   to: '/accounts/$accountId/profiles/$profileId',
-  label: t('nav.overview'),
+  labelKey: 'nav.overview',
   testId: 'overview',
   demoHidden: false,
   icon: LayoutDashboard,
@@ -138,7 +140,7 @@ export type ProfileSectionTo =
 /** A nav row: a section item narrowed to the literal `to` union. */
 export interface ProfileNavItem extends DemoVisible {
   readonly to: ProfileSectionTo;
-  readonly label: string;
+  readonly labelKey: I18nKey;
   readonly testId: string;
   readonly icon: LucideIcon;
 }
@@ -165,7 +167,7 @@ export const PROFILE_NAV_ITEMS: readonly ProfileNavItem[] = [
     .flatMap((g): readonly ProfileNavItem[] => g.items),
 ];
 
-/** Route path -> nav label, so a breadcrumb names a section exactly as the navs do. */
-export const PROFILE_SECTION_LABELS: ReadonlyMap<string, string> = new Map(
-  PROFILE_NAV_ITEMS.map((i) => [i.to, i.label]),
+/** Route path -> nav label KEY (not resolved text — see the module doc comment), so a breadcrumb can `t()` a section's label exactly as the navs do. */
+export const PROFILE_SECTION_LABELS: ReadonlyMap<string, I18nKey> = new Map(
+  PROFILE_NAV_ITEMS.map((i) => [i.to, i.labelKey]),
 );

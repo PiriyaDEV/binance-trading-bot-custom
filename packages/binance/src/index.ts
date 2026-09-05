@@ -48,7 +48,33 @@ export {
   type Ticker24hrDto,
 } from './binance-rest.js';
 
-export { resolveBinanceEndpoints, type BinanceEndpointSet } from './endpoints.js';
+export {
+  resolveBinanceEndpoints,
+  type BinanceEndpointSet,
+  type BinanceMarketType,
+} from './endpoints.js';
+
+export {
+  BINANCE_FUTURES_HOSTS,
+  BINANCE_FUTURES_USER_WS_HOSTS,
+  BINANCE_FUTURES_WS_HOSTS,
+  createBinanceFuturesRest,
+  type BinanceFuturesRestClient,
+  type CreateBinanceFuturesRestOptions,
+  type FuturesAccountDto,
+  type FuturesAssetDto,
+  type FuturesCancelOrderDto,
+  type FuturesExchangeInfoDto,
+  type FuturesExchangeSymbolDto,
+  type FuturesKlineRow,
+  type FuturesOpenOrderDto,
+  type FuturesOrderSide,
+  type FuturesOrderType,
+  type FuturesPlaceOrderDto,
+  type FuturesPlaceOrderParams,
+  type FuturesPositionDto,
+  type FuturesPositionSide,
+} from './binance-futures-rest.js';
 
 export {
   createOrderRateGovernor,

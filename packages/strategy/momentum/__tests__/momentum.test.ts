@@ -209,6 +209,8 @@ describe('momentum.tick — entry', () => {
       schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
       entryPrice: '14',
       highSinceEntry: '14',
+      // A long position never uses the short-side trailing mark.
+      lowSinceEntry: null,
       // Unarmed at entry by definition; seeded on the first held tick that sees
       // a bucket-end 1m close.
       profitHigh: null,
@@ -582,6 +584,7 @@ describe('momentum.tick — exit', () => {
       schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
       entryPrice: null,
       highSinceEntry: null,
+      lowSinceEntry: null,
       profitHigh: null,
       heldQuantity: null,
       lastEntryCandleMs: null,
@@ -1415,6 +1418,7 @@ describe('momentumPositionAdapter', () => {
       profitTrailSinceMs: null,
       entryPrice: null,
       highSinceEntry: null,
+      lowSinceEntry: null,
       profitHigh: null,
       heldQuantity: null,
     });
@@ -1495,6 +1499,7 @@ describe('momentumPositionAdapter', () => {
       body({
         entryPrice: null,
         highSinceEntry: null,
+        lowSinceEntry: null,
         profitHigh: null,
         profitTrailSinceMs: null,
       }),
