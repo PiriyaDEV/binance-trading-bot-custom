@@ -477,20 +477,33 @@ export interface PositionView {
    */
   readonly avgEntryPrice: string | null;
   readonly heldQuantity: string | null;
+  /**
+   * Which way the open position faces, `null` when flat (or for a strategy
+   * that has never opted into shorting — every reader must treat `null` the
+   * same as `'LONG'` for a non-null `heldQuantity`, matching the historical
+   * long-only meaning of this view before this field existed).
+   */
+  readonly positionSide?: 'LONG' | 'SHORT' | null;
 }
 
 /**
  * An adopted exchange fill the worker has already resolved with `Decimal`
  * math (weighted-average entry price and post-fill quantity). The plugin
  * merges it onto its own state body so the worker never names a field:
- *   - `buy`         — entry/add: set entry price + held quantity, reset
+ *   - `buy`         — long entry/add: set entry price + held quantity, reset
  *                     any trailing high-water mark.
- *   - `sell-reduce` — partial exit: lower the held quantity only.
- *   - `empty`       — full exit: flatten the position.
+ *   - `sell-reduce` — long partial exit: lower the held quantity only.
+ *   - `sell-open`   — short entry/add: set entry price + held quantity,
+ *                     mirrors `buy` for the opposite side.
+ *   - `buy-reduce`  — short partial exit (a cover): lower the held quantity
+ *                     only, mirrors `sell-reduce`.
+ *   - `empty`       — full exit: flatten the position, either side.
  */
 export type AdoptedFill =
   | { readonly kind: 'buy'; readonly avgEntryPrice: string; readonly heldQuantity: string }
   | { readonly kind: 'sell-reduce'; readonly heldQuantity: string }
+  | { readonly kind: 'sell-open'; readonly avgEntryPrice: string; readonly heldQuantity: string }
+  | { readonly kind: 'buy-reduce'; readonly heldQuantity: string }
   | { readonly kind: 'empty' };
 
 /**

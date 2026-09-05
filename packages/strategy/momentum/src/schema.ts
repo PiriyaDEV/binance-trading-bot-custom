@@ -367,6 +367,28 @@ export const MomentumConfigSchema = z.object({
     .enum(MOMENTUM_CANDLE_INTERVALS)
     .default(MOMENTUM_DEFAULT_INTERVAL)
     .describe('Candle interval the strategy reads for its EMA cross.'),
+  // Which side(s) of the market this profile trades. 'long' (default) enters
+  // on a fast/slow EMA cross-up and exits on a cross-down or a trailing-stop
+  // retrace from the high since entry — the strategy's original, long-only
+  // behaviour, unchanged. 'short' mirrors every part of that: enters on a
+  // cross-DOWN, exits on a cross-up or a trailing-stop bounce from the low
+  // since entry. 'both' stays in the market continuously, flipping sides on
+  // every cross instead of sitting flat between them: flat + cross-up opens
+  // long, flat + cross-down opens short, and each position closes on the
+  // opposite cross or its own trailing stop — the same entry/exit mechanics
+  // as the single-direction modes, just without a flat gap waiting for "the"
+  // direction this profile trades. A short leg (under 'short' or 'both')
+  // does NOT apply `trendFilter`, `entryExtension`, `atrTrailingStop`,
+  // `profitTrail`, or `protectiveStop` — those gates/enhancements were built
+  // and tested for the long side only; mirroring them is deliberately out of
+  // scope for this first short-capable pass (inert on a short leg, not
+  // misapplied — a 'both' profile's LONG leg still gets all of them).
+  direction: z
+    .enum(['long', 'short', 'both'])
+    .default('long')
+    .describe(
+      "'long' (default) buys a cross-up and sells a cross-down/trailing-stop. 'short' sells a cross-down to open and buys back (covers) on a cross-up/trailing-stop bounce. 'both' does both, flipping directly from one side to the other on every cross instead of going flat between them. A short leg (under 'short' or 'both') uses only the fast/slow EMA cross and the plain trailing-stop percentage — the trend filter, extension guard, ATR trail, profit trail, and protective stop apply only to the long leg for now.",
+    ),
   entrySizing: MomentumEntrySizingSchema,
   // Reserve cap is account-wide, so it is profile-level only (excluded from the
   // per-symbol override below): a per-symbol cap on an account-wide total is
@@ -469,6 +491,13 @@ export const MomentumStateSchema = z.object({
   // a live intra-candle wick — so a transient spike cannot tighten the stop.
   // Seeded to the entry price on entry; cleared on exit.
   highSinceEntry: z.string().nullable(),
+  // Low-water mark of the closed-candle CLOSE since entry, the short-side
+  // mirror of `highSinceEntry` — only meaningful while `config.direction ===
+  // 'short'` (unused, and left null, on a long position). The short's
+  // trailing stop measures the bounce from this low. Additive with
+  // `.default(null)` so the state schema version can stay put, same as
+  // `lastEntryCandleMs`.
+  lowSinceEntry: z.string().nullable().default(null),
   // High-water mark of the profit trail: the best close among the bucket-end 1m
   // candles seen since entry, floored at the entry price. Separate from
   // `highSinceEntry` because the two ratchet on different clocks — this one
@@ -567,6 +596,7 @@ export const initialMomentumState = (): MomentumState => ({
   schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
   entryPrice: null,
   highSinceEntry: null,
+  lowSinceEntry: null,
   profitHigh: null,
   heldQuantity: null,
   lastEntryCandleMs: null,

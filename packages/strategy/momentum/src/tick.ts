@@ -228,6 +228,28 @@ export const computeTick = (input: MomentumInput): MomentumOutput => {
   const crossUp = fastPrev.lte(slowPrev.mul(band)) && fastNow.gt(slowNow.mul(band));
   const crossDown = fastPrev.gte(slowPrev) && fastNow.lt(slowNow);
 
+  if (config.direction === 'short') {
+    return state.entryPrice === null
+      ? evaluateShortEntry(scoped, crossDown, lastCandle.closeTimeMs)
+      : evaluateShortExit(scoped, state.entryPrice, crossUp, lastCandle, forceSell);
+  }
+
+  // 'both': flat opens whichever side crosses (long on cross-up, short on
+  // cross-down — mutually exclusive by construction, so never both at once);
+  // held dispatches by which side is actually open. `lowSinceEntry !== null`
+  // is the short tell: `evaluateShortEntry` is the only path that ever sets
+  // it (to a non-null price), and every full exit clears it back to null
+  // alongside `entryPrice` — so it doubles as a direction flag without a new
+  // state field. A short entry skips the long-only trend/extension gates
+  // below (same scope limit as `direction: 'short'` — see the config's own
+  // doc comment) since those gates were built and tested for the long side.
+  if (config.direction === 'both' && state.entryPrice === null && crossDown) {
+    return evaluateShortEntry(scoped, crossDown, lastCandle.closeTimeMs);
+  }
+  if (config.direction === 'both' && state.entryPrice !== null && state.lowSinceEntry !== null) {
+    return evaluateShortExit(scoped, state.entryPrice, crossUp, lastCandle, forceSell);
+  }
+
   if (state.entryPrice === null) {
     if (crossUp) {
       // One entry per cross. `crossUp` reads the last two CLOSED candles, so it
@@ -335,6 +357,8 @@ const evaluateEntry = (
     schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
     entryPrice: market.currentPrice,
     highSinceEntry: market.currentPrice,
+    // A long position never uses the short-side trailing mark.
+    lowSinceEntry: null,
     // Seeded on the first held tick from the 1m window, not here: at entry the
     // profit trail is definitionally unarmed, and seeding it to the entry price
     // would be indistinguishable from "no 1m candle has closed yet".
@@ -484,6 +508,7 @@ const evaluateExit = (
       schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
       entryPrice: null,
       highSinceEntry: null,
+      lowSinceEntry: null,
       profitHigh: null,
       heldQuantity: null,
       lastEntryCandleMs: lastEntryCandle(state),
@@ -584,5 +609,230 @@ const evaluateExit = (
             nativeTrailed: arm.nativeTrailed,
           })),
     ],
+  };
+};
+
+/**
+ * Short entry: mirrors {@link evaluateEntry} for the opposite side — a
+ * `SELL` with `positionSide: 'SHORT'` opens the position instead of a plain
+ * `BUY`. Deliberately does not consult `trendGate`/`extensionGate`: those
+ * gates are long-only for this first short-capable pass (see
+ * `MomentumConfigSchema.direction`'s doc comment).
+ */
+const evaluateShortEntry = (
+  input: MomentumInput,
+  crossDown: boolean,
+  candleCloseMs: number,
+): MomentumOutput => {
+  const { state, config, market, profile, account } = input;
+  if (!crossDown) {
+    return hold(state, [
+      log('debug', 'momentum: flat (short), no entry signal', { symbol: market.symbol }),
+    ]);
+  }
+  if (lastEntryCandle(state) === candleCloseMs) {
+    return hold(
+      state,
+      [
+        log('debug', 'momentum: short entry suppressed, already entered on this candle', {
+          symbol: market.symbol,
+          candleCloseMs,
+        }),
+      ],
+      [skipMetric('entry', 'already-entered-this-candle')],
+      { reason: 'already-entered-this-candle' },
+    );
+  }
+  const budget = resolveEntryBudget(config, account, market.symbolInfo.quoteAsset);
+  if ('skip' in budget) {
+    return hold(
+      state,
+      [
+        log('warn', 'momentum: short entry skipped', {
+          reason: budget.skip,
+          symbol: market.symbol,
+        }),
+      ],
+      [skipMetric('entry', budget.skip)],
+      { reason: budget.skip },
+    );
+  }
+  // Same sizing math as a long entry (budget / price): opening a short of
+  // this notional, not a leveraged one — the app's fixed low-leverage policy
+  // is enforced where the order actually reaches the exchange, not here.
+  const sized = computeEntryQuantity(budget.budget, market.currentPrice, market.symbolInfo.filters);
+  if ('skip' in sized) {
+    return hold(
+      state,
+      [log('warn', 'momentum: short entry skipped', { reason: sized.skip, symbol: market.symbol })],
+      [skipMetric('entry', sized.skip)],
+      { reason: sized.skip },
+    );
+  }
+  const decision: Decision = {
+    type: 'place-order',
+    intent: {
+      symbol: market.symbol,
+      side: 'SELL',
+      positionSide: 'SHORT',
+      reason: 'entry',
+      clientOrderId: entryClientOrderId(profile.id, market.symbol, candleCloseMs),
+    },
+    params: { type: 'MARKET', quantity: sized.quantity },
+  };
+  const nextState: MomentumState = {
+    schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
+    entryPrice: market.currentPrice,
+    highSinceEntry: null,
+    lowSinceEntry: market.currentPrice,
+    profitHigh: null,
+    // NOT `sized.quantity`: the order just placed is still RESTING (the fill
+    // model never fills on the placement candle), so the real held quantity
+    // is unknown until the executor's fill adoption sets it from the actual
+    // landed fill next tick — same value, but adopted exactly once. Setting
+    // it here too would double it the moment adoption runs (`resolveFill`
+    // accumulates fill.quantity ONTO whatever `heldQuantity` already reads),
+    // and unlike a long exit, a short's COVER (a BUY) is never capped by a
+    // held-base check the way a long's SELL is, so an inflated quantity here
+    // sails straight through to the cover order instead of being silently
+    // clamped back down. `null` is exactly the "not yet confirmed" state the
+    // exit path below already defers on, so this costs one held tick, not a
+    // wrong position.
+    heldQuantity: null,
+    lastEntryCandleMs: candleCloseMs,
+    profitTrailSinceMs: null,
+    entryBlocker: null,
+    protectiveStopBlocker: null,
+  };
+  return {
+    nextState,
+    decisions: [decision],
+    logs: [
+      log('info', 'momentum: short entry on EMA cross-down', {
+        symbol: market.symbol,
+        price: market.currentPrice,
+        quantity: sized.quantity,
+      }),
+    ],
+    metrics: [metric('momentum.entry', { direction: 'short' })],
+  };
+};
+
+/**
+ * Short exit (a cover): mirrors {@link evaluateExit} for the opposite side.
+ * `lowSinceEntry` ratchets DOWN on new closed-candle lows (the mirror of
+ * `highSinceEntry`'s ratchet up); the trailing stop fires when live price
+ * BOUNCES back up `trailingStopPct` from that low, the mirror of a long's
+ * retrace down from its high. No ATR trail, profit trail, or protective
+ * stop for a short in this first pass — see `direction`'s doc comment.
+ */
+const evaluateShortExit = (
+  input: MomentumInput,
+  entryPrice: string,
+  crossUp: boolean,
+  lastCandle: Candle,
+  forceSell: boolean,
+): MomentumOutput => {
+  const { state, config, market, profile } = input;
+  const prevLow = new Decimal(state.lowSinceEntry ?? entryPrice);
+  const closedClose = new Decimal(lastCandle.close);
+  const madeNewLow = closedClose.lt(prevLow);
+  const effectiveLow = madeNewLow ? closedClose : prevLow;
+  const trailPct = new Decimal(config.trailingStopPct);
+  const stopLevel = effectiveLow.mul(new Decimal(1).plus(trailPct));
+  const price = new Decimal(market.currentPrice);
+  const trailHit = price.gte(stopLevel);
+
+  if (forceSell || trailHit || crossUp) {
+    if (state.heldQuantity === null) {
+      const deferred = hold(
+        state,
+        [
+          log(
+            'warn',
+            forceSell
+              ? 'momentum: operator force-cover could not execute — no tracked quantity yet'
+              : 'momentum: short exit signal but no held quantity',
+            { symbol: market.symbol },
+          ),
+        ],
+        [skipMetric('exit', forceSell ? 'force-sell-no-held' : 'no-held')],
+      );
+      return forceSell
+        ? { ...deferred, overrideDeferred: true, overrideDeclineReason: 'force-sell-no-held' }
+        : deferred;
+    }
+    const sized = computeExitQuantity(
+      state.heldQuantity,
+      market.currentPrice,
+      market.symbolInfo.filters,
+    );
+    if ('skip' in sized) {
+      const skipped = hold(
+        state,
+        [
+          log('warn', 'momentum: short cover skipped', {
+            reason: sized.skip,
+            symbol: market.symbol,
+          }),
+        ],
+        [skipMetric('exit', sized.skip)],
+      );
+      return forceSell ? { ...skipped, overrideDeclineReason: sized.skip } : skipped;
+    }
+    const reason = forceSell ? 'operator-force-sell' : trailHit ? 'trailing-stop' : 'ema-cross';
+    const overrideActionId = forceSell ? input.bundle.override?.overrideActionId : undefined;
+    const cover: Decision = {
+      type: 'place-order',
+      intent: {
+        symbol: market.symbol,
+        side: 'BUY',
+        positionSide: 'SHORT',
+        reason: 'exit',
+        clientOrderId: exitClientOrderId(profile.id, market.symbol, lastCandle.closeTimeMs),
+        ...(overrideActionId === undefined ? {} : { overrideActionId }),
+      },
+      params: { type: 'MARKET', quantity: sized.quantity },
+    };
+    const nextState: MomentumState = {
+      schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
+      entryPrice: null,
+      highSinceEntry: null,
+      lowSinceEntry: null,
+      profitHigh: null,
+      heldQuantity: null,
+      lastEntryCandleMs: lastEntryCandle(state),
+      profitTrailSinceMs: null,
+      entryBlocker: null,
+      protectiveStopBlocker: null,
+    };
+    return {
+      nextState,
+      decisions: [cover],
+      logs: [
+        log('info', 'momentum: short exit (cover)', {
+          symbol: market.symbol,
+          reason,
+          price: market.currentPrice,
+          quantity: sized.quantity,
+        }),
+      ],
+      metrics: [metric('momentum.exit', { reason, direction: 'short' })],
+    };
+  }
+
+  const newLow = madeNewLow ? closedClose.toString() : (state.lowSinceEntry ?? entryPrice);
+  const nextState: MomentumState = {
+    ...state,
+    lowSinceEntry: newLow,
+    entryBlocker: null,
+  };
+  return {
+    nextState,
+    decisions: [{ type: 'noop' }],
+    logs: [
+      log('debug', 'momentum: holding short', { symbol: market.symbol, lowSinceEntry: newLow }),
+    ],
+    metrics: [],
   };
 };

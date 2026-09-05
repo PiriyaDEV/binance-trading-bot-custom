@@ -42,6 +42,14 @@ export const bridgeScoutPositionAdapter: PositionStateAdapter<BridgeScoutState> 
         };
       case 'sell-reduce':
         return { ...(body as unknown as BridgeScoutState), heldQuantity: fill.heldQuantity };
+      // Bridge-scout never opens a short — see the strategy's own header
+      // comment ("holds exactly ONE non-bridge coin at a time", a spot long
+      // rotation). These kinds cannot occur for this strategy's own orders;
+      // returned as a no-op rather than thrown so an unrelated future fill
+      // source cannot crash the adapter on a kind it does not use.
+      case 'sell-open':
+      case 'buy-reduce':
+        return null;
       case 'empty': {
         if (
           body['avgEntryPrice'] === null &&

@@ -503,11 +503,13 @@ export async function runBacktest<C, S, B extends Readonly<Record<string, unknow
  * `null` from `applyFill` (unusable body) leaves the state unchanged.
  */
 export function adoptOne<S>(position: PositionStateAdapter<S>, state: S, fill: DrainedFill): S {
-  const adopted = resolveFill(position.readPosition(state), {
-    side: fill.side,
-    price: fill.price,
-    quantity: fill.qty,
-  });
+  const adopted = resolveFill(
+    position.readPosition(state),
+    { side: fill.side, price: fill.price, quantity: fill.qty },
+    undefined,
+    undefined,
+    fill.positionSide ?? 'LONG',
+  );
   return position.applyFill(state, adopted) ?? state;
 }
 
