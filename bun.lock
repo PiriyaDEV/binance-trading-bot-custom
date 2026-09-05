@@ -6,6 +6,7 @@
       "name": "binance-trading-bot",
       "dependencies": {
         "@app/api": "workspace:*",
+        "@app/binance": "workspace:*",
         "@app/contracts": "workspace:*",
         "@app/core": "workspace:*",
         "@app/db": "workspace:*",

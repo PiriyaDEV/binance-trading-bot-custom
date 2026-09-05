@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { BinanceMode } from './profiles.js';
+import { BinanceMode, MarketType } from './profiles.js';
 
 /**
  * A Binance account: one API key pair plus the environment that key pair talks
@@ -22,11 +22,17 @@ export const AccountName = z
 /**
  * Body for `POST /accounts`. `binanceMode` is fixed at create: it is the
  * environment the key pair talks to (testnet keys vs live keys), and a key pair
- * cannot switch environments, so it is not patchable afterwards.
+ * cannot switch environments, so it is not patchable afterwards. `marketType`
+ * is likewise fixed at create for the same reason (a futures key pair is a
+ * separate credential from a spot one — see {@link MarketType}); defaults to
+ * `'spot'` so every existing caller is unaffected. The route layer rejects
+ * `marketType:'futures'` combined with `binanceMode:'live'` — futures trading
+ * is testnet-only in this app, same standing rule as everything else.
  */
 export const AccountCreate = z.object({
   name: AccountName,
   binanceMode: BinanceMode,
+  marketType: MarketType.default('spot'),
 });
 /** TS type derived from {@link AccountCreate} so consumers don't re-run z.infer at every call site. */
 export type AccountCreate = z.infer<typeof AccountCreate>;
@@ -43,6 +49,7 @@ export const AccountResponse = z.object({
   id: z.uuid(),
   name: z.string(),
   binanceMode: BinanceMode,
+  marketType: MarketType,
   /** Whether an API key pair has been stored for this account yet (drives the "add keys" prompt). */
   apiKeyConfigured: z.boolean(),
   createdAt: z.iso.datetime(),

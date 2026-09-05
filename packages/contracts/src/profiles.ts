@@ -9,6 +9,17 @@ export const BinanceMode = z.enum(['test', 'live']);
 export type BinanceMode = z.infer<typeof BinanceMode>;
 
 /**
+ * Which Binance product an account's key pair trades. A new axis sibling to
+ * {@link BinanceMode}, not nested under it — a futures key pair is a wholly
+ * separate credential from a spot one, so (like test vs live) the operator
+ * creates a separate account for futures rather than one account holding
+ * both. Defaults to `'spot'` for every account created before this existed.
+ */
+export const MarketType = z.enum(['spot', 'futures']);
+/** TS type derived from {@link MarketType} so consumers don't re-run z.infer at every call site. */
+export type MarketType = z.infer<typeof MarketType>;
+
+/**
  * Profile display name. `.trim()` normalises padding before the length and
  * charset checks run; the charset matches the wizard's "letters, numbers,
  * spaces, dashes, and underscores" hint so the promise is enforced server-side.

@@ -136,6 +136,7 @@ const profileRow: Awaited<ReturnType<ProfileRepo['profile']['findById']>> = {
   state: {},
   enabled: true,
   quoteAsset: 'usdt',
+  leverage: null,
   benchmarkMode: 'btc',
   baselineBacktestRunId: null,
   discoveryConfig,
