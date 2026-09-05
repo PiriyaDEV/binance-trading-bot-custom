@@ -415,6 +415,14 @@ export const th: Readonly<Record<string, string>> = {
   'wizard.preset.smart.robustness.detail':
     'กำไรรวม {totalReturn}% ตลอดช่วงที่ทดสอบ · In-sample: profit factor {inPf}, alpha {inAlpha}% ส่วน out-of-sample (ช่วงล่าสุด): profit factor {oosPf}, alpha {oosAlpha}%',
   'wizard.preset.smart.view': 'ดูโปรไฟล์',
+  'wizard.preset.enable_toggle.label': 'เปิดให้เทรดทันที',
+  'wizard.preset.enable_toggle.help_on':
+    'บอทจะเริ่มเทรดทันทีที่สร้างเสร็จ ด้วยออเดอร์จริงในบัญชีของคุณ',
+  'wizard.preset.enable_toggle.help_off':
+    'โปรไฟล์จะถูกสร้างและผูกเหรียญไว้ให้ แต่ยังไม่เทรด จนกว่าคุณจะกดเปิดใช้งานเอง',
+  'wizard.preset.smart.done.enabled': 'เปิดใช้งานแล้ว — บอทกำลังเทรดโปรไฟล์นี้อยู่',
+  'wizard.preset.smart.done.disabled':
+    'สร้างแล้วแต่ยังไม่เปิดใช้งาน — ตรวจสอบตัวเลขด้านบนก่อน แล้วค่อยกดเปิดใช้งานจากหน้าโปรไฟล์เมื่อพร้อม',
   'wizard.preset.preview.clears':
     'เช็คล่าสุด {ago} · กำไร {totalReturn}% · profit factor {pf} · ผ่านเกณฑ์ Live-gate',
   'wizard.preset.preview.misses':

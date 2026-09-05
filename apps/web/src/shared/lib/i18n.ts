@@ -436,6 +436,14 @@ const en: Readonly<Record<string, string>> = {
   'wizard.preset.smart.robustness.detail':
     'Total return {totalReturn}% over the window. In-sample: profit factor {inPf}, alpha {inAlpha}%. Out-of-sample (most recent slice): profit factor {oosPf}, alpha {oosAlpha}%.',
   'wizard.preset.smart.view': 'View profile',
+  'wizard.preset.enable_toggle.label': 'Enable trading immediately',
+  'wizard.preset.enable_toggle.help_on':
+    'The bot starts trading as soon as this is created, with real orders on your account.',
+  'wizard.preset.enable_toggle.help_off':
+    'The profile is created and its coins are bound, but stays paused — nothing trades until you enable it yourself.',
+  'wizard.preset.smart.done.enabled': 'Enabled — the bot is now trading this profile.',
+  'wizard.preset.smart.done.disabled':
+    'Created but not enabled — review the numbers above, then enable it from the profile page when ready.',
   'wizard.preset.preview.clears':
     'Checked {ago} · {totalReturn}% return · profit factor {pf} · clears the Live-gate',
   'wizard.preset.preview.misses':

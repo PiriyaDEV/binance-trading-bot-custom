@@ -101,6 +101,8 @@ export type SmartPresetProgress =
       readonly robustness: SmartPresetRobustness;
       /** Whether this result came from a cached preview instead of a fresh run — the caller labels it with the cache's age. */
       readonly fromCache: boolean;
+      /** Whether the profile was left enabled (trading live) or created paused — the operator's own choice from the preset picker, not derived from `robustness`. */
+      readonly enabled: boolean;
     }
   | { readonly phase: 'error'; readonly message: string };
 
@@ -245,7 +247,7 @@ export function useSmartPresetSubmit(
     baseConfig: Record<string, unknown>,
     intervals: readonly BacktestInterval[],
     bindMode: PresetBindMode,
-    options?: { readonly forceRefresh?: boolean },
+    options?: { readonly forceRefresh?: boolean; readonly enableAfterBind?: boolean },
   ) => Promise<void>;
   readonly goToProfile: () => void;
 } {
@@ -261,7 +263,7 @@ export function useSmartPresetSubmit(
     baseConfig: Record<string, unknown>,
     intervals: readonly BacktestInterval[],
     bindMode: PresetBindMode,
-    options?: { readonly forceRefresh?: boolean },
+    options?: { readonly forceRefresh?: boolean; readonly enableAfterBind?: boolean },
   ): Promise<void> => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -346,13 +348,18 @@ export function useSmartPresetSubmit(
         setProgress({ phase: 'error', message: t('wizard.smart.error.all_conflicted') });
         return;
       }
+      // Defaults to enabled (the prior always-on behaviour) so a caller that
+      // omits the option keeps working; the preset picker itself always
+      // passes an explicit choice once the operator has seen the backtest
+      // numbers, so this default rarely fires from that path.
+      const enabled = options?.enableAfterBind ?? true;
       await patchProfile(profileId, {
         config: { ...baseConfig, candleInterval: interval },
-        enabled: true,
+        enabled,
       });
 
       await queryClient.invalidateQueries({ queryKey: ['dashboard-aggregate', accountId] });
-      setProgress({ phase: 'done', profileId, interval, picks, robustness, fromCache });
+      setProgress({ phase: 'done', profileId, interval, picks, robustness, fromCache, enabled });
     } catch (cause) {
       const message =
         cause instanceof ApiError && cause.message ? cause.message : t('wizard.error.generic');

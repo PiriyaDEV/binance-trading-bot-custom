@@ -58,6 +58,16 @@ export function Step2Strategy({
   const [selectedPresetId, setSelectedPresetId] = useState<StrategyPreset['id'] | 'smart'>(
     DEFAULT_PRESET_ID,
   );
+  // Whether picking a preset also enables it for live trading right away, vs.
+  // creating it paused for the operator to review first. `null` means the
+  // operator has not touched the checkbox: the EFFECTIVE value then derives
+  // from the selected preset's cached backtest preview each render ("clears
+  // the gate" -> on, "misses" or unknown -> off), so switching presets keeps
+  // tracking the new preset's own verdict. The moment the operator touches
+  // the checkbox their choice is stored here and sticks across preset
+  // switches instead of being silently overridden — computed during render
+  // rather than synced via an effect, so there is no cascading re-render.
+  const [enableOverride, setEnableOverride] = useState<boolean | null>(null);
   // Manual strategy picker starts collapsed: presets are the primary path,
   // full per-field configuration is the escape hatch for an operator who
   // already knows they want a different strategy or their own tuning.
@@ -75,6 +85,11 @@ export function Step2Strategy({
   });
   const previewFor = (presetId: string) =>
     previews.data?.previews.find((p) => p.presetId === presetId) ?? null;
+  // Effective value: the operator's own choice once they have made one,
+  // otherwise the selected preset's own cached verdict (see the state doc
+  // comment above) — derived here during render, not synced via an effect.
+  const enableImmediately =
+    enableOverride ?? previewFor(selectedPresetId)?.robustness.clearsGate ?? true;
 
   const onSubmitPreset = (): void => {
     if (!trailingTrade) return;
@@ -87,6 +102,7 @@ export function Step2Strategy({
         mergeStrategyConfig(trailingTrade.defaultConfig, balanced.strategyConfig),
         SMART_PRESET_INTERVALS,
         { maxSymbols: SMART_PRESET_MAX_SYMBOLS },
+        { enableAfterBind: enableImmediately },
       );
       return;
     }
@@ -96,13 +112,15 @@ export function Step2Strategy({
     // binds its own top-ranked coins immediately — the same mechanism Smart
     // uses, just with the tier's own risk config and symbol cap — so picking
     // a tier starts the bot trading right away instead of waiting on the
-    // next Discovery scan cycle.
+    // next Discovery scan cycle (when `enableImmediately` is on; otherwise it
+    // is bound but left paused for review, same as Smart).
     void smart.run(
       preset.id,
       trailingTrade,
       mergeStrategyConfig(trailingTrade.defaultConfig, preset.strategyConfig),
       PRESET_TIER_INTERVALS,
       { maxSymbols: preset.discoveryConfig.maxAutoSymbols },
+      { enableAfterBind: enableImmediately },
     );
   };
 
@@ -225,6 +243,25 @@ export function Step2Strategy({
                   {state.error}
                 </p>
               ) : null}
+              <label className="flex cursor-pointer items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={enableImmediately}
+                  onChange={(e) => setEnableOverride(e.target.checked)}
+                  data-testid="wizard-preset-enable-toggle"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium">{t('wizard.preset.enable_toggle.label')}</span>
+                  <span className="text-xs text-muted-fg">
+                    {t(
+                      enableImmediately
+                        ? 'wizard.preset.enable_toggle.help_on'
+                        : 'wizard.preset.enable_toggle.help_off',
+                    )}
+                  </span>
+                </span>
+              </label>
               <NavBar
                 onBack={() => dispatch({ type: 'goto', step: 1 })}
                 onNext={onSubmitPreset}
@@ -419,6 +456,16 @@ function SmartPresetProgressView({
             })}
           </p>
         </div>
+        <p
+          className={`text-sm ${progress.enabled ? 'text-success' : 'text-muted-fg'}`}
+          data-testid="wizard-smart-enabled-status"
+        >
+          {t(
+            progress.enabled
+              ? 'wizard.preset.smart.done.enabled'
+              : 'wizard.preset.smart.done.disabled',
+          )}
+        </p>
         {progress.picks.length > 0 ? (
           <ul
             className="divide-y divide-border border border-border"
