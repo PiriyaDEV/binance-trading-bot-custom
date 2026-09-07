@@ -25,6 +25,7 @@ import {
 import { computeEntryQuantity, computeExitQuantity } from './quantity.js';
 import { extensionMaxPercent, extensionPeriod } from './extension.js';
 import { trendMaType, trendPeriod } from './trend-filter.js';
+import { regimeMaType, regimePeriod } from './regime-filter.js';
 import { profitTrailEpoch, ratchetProfitHigh, resolveStopLevel } from './stop-level.js';
 import { resolveEntryBudget } from './sizing.js';
 import { entryClientOrderId, exitClientOrderId } from './client-order-id.js';
@@ -155,6 +156,71 @@ const trendGate = (
   if (rising) {
     const prevLine = trendLine(maType, candles.slice(0, candles.length - k), period);
     if (line.gte(prevLine)) return 'rising-trend';
+  }
+  return 'pass';
+};
+
+/**
+ * Market-wide regime gate result. `pass` allows the entry; `against-regime`
+ * is a genuine sit-out (the reference market is on the wrong side of its own
+ * line for this side); `regime-insufficient-history` is fail-closed — either
+ * the reference window is too short, or (the live-today case)
+ * `TickInput.reference` is absent entirely because the live worker does not
+ * yet stream it. One reason pair covers both directions (unlike
+ * `TrendGate`'s four): a single external bias just blocks whichever side
+ * disagrees with it.
+ */
+type RegimeGate = 'pass' | 'against-regime' | 'regime-insufficient-history';
+
+/**
+ * Market-wide regime gate: the portfolio-level counterpart to {@link trendGate}.
+ * Compares the REFERENCE market's OWN price to the REFERENCE market's OWN
+ * trend line (e.g. "is BTC above its 50-day line") — never the ticked
+ * symbol's price, which is irrelevant here. Reads `input.reference` (a FIXED
+ * symbol — see `Strategy.capabilities.referenceSymbol`, BTC for momentum),
+ * so the same bias applies to every symbol's entries at once. Disabled or
+ * absent => `pass`. Fails closed — `regime-insufficient-history` — when
+ * `reference` is missing altogether (today: always true on a live tick,
+ * since that plumbing isn't wired yet) or its window is too short, exactly
+ * like {@link trendGate}'s own fail-closed convention, so a misconfigured or
+ * not-yet-live-wired gate reads as "suppressing everything," never as
+ * "silently permissive."
+ */
+const regimeGate = (input: MomentumInput, side: 'long' | 'short'): RegimeGate => {
+  const rf = input.config.regimeFilter;
+  if (rf?.enabled !== true) return 'pass';
+  const reference = input.reference;
+  const referenceCandles = (reference?.candlesByInterval[input.config.candleInterval] ?? []).filter(
+    (c) => c.isClosed,
+  );
+  const rising = rf.requireRising === true;
+  const rawK = Number(rf.slopeLookbackBars ?? 10);
+  const k = rising ? (Number.isFinite(rawK) && rawK >= 1 ? rawK : 1) : 0;
+  const period = regimePeriod(rf.period);
+  const maType = regimeMaType(rf.maType);
+  if (!reference || referenceCandles.length < period + k) return 'regime-insufficient-history';
+  const line = trendLine(maType, referenceCandles, period);
+  const price = new Decimal(reference.currentPrice);
+  if (side === 'long') {
+    if (price.lte(line)) return 'against-regime';
+    if (rising) {
+      const prevLine = trendLine(
+        maType,
+        referenceCandles.slice(0, referenceCandles.length - k),
+        period,
+      );
+      if (line.lte(prevLine)) return 'against-regime';
+    }
+    return 'pass';
+  }
+  if (price.gte(line)) return 'against-regime';
+  if (rising) {
+    const prevLine = trendLine(
+      maType,
+      referenceCandles.slice(0, referenceCandles.length - k),
+      period,
+    );
+    if (line.gte(prevLine)) return 'against-regime';
   }
   return 'pass';
 };
@@ -296,6 +362,23 @@ export const computeTick = (input: MomentumInput): MomentumOutput => {
           ],
           [skipMetric('entry', 'already-entered-this-candle')],
           { reason: 'already-entered-this-candle' },
+        );
+      }
+      // Market-wide regime gate first (macro-of-macro): suppress a fresh long
+      // unless the REFERENCE market (BTC) is itself above its own long-term
+      // line, independent of and evaluated before the per-symbol trend gate.
+      const regime = regimeGate(scoped, 'long');
+      if (regime !== 'pass') {
+        return hold(
+          state,
+          [
+            log('debug', 'momentum: entry suppressed by regime filter', {
+              symbol: market.symbol,
+              gate: regime,
+            }),
+          ],
+          [skipMetric('entry', regime)],
+          { reason: regime },
         );
       }
       // Macro trend gate: suppress a fresh long unless price is above the long-term
@@ -641,16 +724,17 @@ const evaluateExit = (
 };
 
 /**
- * Gate + dispatch for a short entry: runs the macro trend filter (side:
- * `'short'`) before handing off to {@link evaluateShortEntry}, the mirror of
- * how a long entry is gated inline in `computeTick` before `evaluateEntry`.
- * Kept as a separate function (rather than inlined at both call sites — pure
- * `direction: 'short'` and `'both'`) since the gate-then-dispatch shape is
- * identical at both. Does NOT run the extension guard — that stays long-only
- * (see `MomentumConfigSchema.direction`'s doc comment). Note: unlike the long
+ * Gate + dispatch for a short entry: runs the market-wide regime gate (side:
+ * `'short'`), then the macro trend filter (side: `'short'`), before handing
+ * off to {@link evaluateShortEntry} — the mirror of how a long entry is gated
+ * inline in `computeTick` before `evaluateEntry`. Kept as a separate function
+ * (rather than inlined at both call sites — pure `direction: 'short'` and
+ * `'both'`) since the gate-then-dispatch shape is identical at both. Does NOT
+ * run the extension guard — that stays long-only (see
+ * `MomentumConfigSchema.direction`'s doc comment). Note: unlike the long
  * path, `evaluateShortEntry` runs its own "already-entered-this-candle" check
- * internally rather than that check living here first, so on a short entry the
- * trend gate is evaluated before the already-entered guard (the long path
+ * internally rather than that check living here first, so on a short entry
+ * both gates are evaluated before the already-entered guard (the long path
  * checks the opposite order) — this only affects which reason a same-tick
  * double-suppression logs, not behavior.
  */
@@ -662,6 +746,20 @@ const shortEntryWithTrendGate = (
 ): MomentumOutput => {
   const { state, config, market } = input;
   if (crossDown) {
+    const regime = regimeGate(input, 'short');
+    if (regime !== 'pass') {
+      return hold(
+        state,
+        [
+          log('debug', 'momentum: short entry suppressed by regime filter', {
+            symbol: market.symbol,
+            gate: regime,
+          }),
+        ],
+        [skipMetric('entry', regime)],
+        { reason: regime },
+      );
+    }
     const gate = trendGate(config, candles, market.currentPrice, 'short');
     if (gate !== 'pass') {
       return hold(

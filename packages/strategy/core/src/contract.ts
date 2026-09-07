@@ -331,6 +331,20 @@ export interface Capabilities {
    */
   readonly needsProfileKv?: boolean;
   /**
+   * A second, fixed symbol whose candles this strategy reads on EVERY tick
+   * regardless of which symbol is being evaluated — a market-wide regime
+   * anchor (e.g. `'BTCUSDT'`), not a per-profile choice. Static per strategy
+   * plugin, the same way `candleIntervals` is: capabilities are declared
+   * once for the whole plugin, not derived from a specific profile's config.
+   * When set, the worker/backtest engine populate `TickInput.reference` with
+   * that symbol's `MarketSnapshot`; when absent, `reference` is never
+   * populated and costs nothing. Live wiring may lag backtest support for
+   * this — see the consuming strategy's own docs for whether the live
+   * worker actually streams this symbol yet; a strategy reading `reference`
+   * must fail closed, not assume it's present.
+   */
+  readonly referenceSymbol?: string;
+  /**
    * Optional per-tick input channels this strategy reads, as tokens from the
    * contracts `BUNDLE_PROVIDERS` set. Typed as `readonly string[]` here — the
    * same loose-in-the-contract convention as `operatorActions` — because the
@@ -414,6 +428,18 @@ export interface TickInput<
    * (the money-math invariant); a non-JSON-serialisable value fails the write.
    */
   readonly profileKv?: Readonly<Record<string, unknown>>;
+  /**
+   * Market snapshot for `capabilities.referenceSymbol`, not `market.symbol` —
+   * a fixed, strategy-wide regime anchor (e.g. BTC) supplied on every tick
+   * regardless of which symbol is being evaluated. Present only when the
+   * strategy declares `capabilities.referenceSymbol`; absent — not an empty
+   * object — otherwise, and (until the live worker wires a pinned
+   * subscription for it) also absent when running live even for an opted-in
+   * strategy. A strategy consuming this MUST treat absence as
+   * "insufficient data," the same fail-closed convention as a too-short
+   * candle window, never as "no regime constraint."
+   */
+  readonly reference?: MarketSnapshot;
 }
 
 export interface TickOutput<State, Events extends StrategyEventMap = StrategyEventMap> {

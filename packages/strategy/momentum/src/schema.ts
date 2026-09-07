@@ -145,6 +145,66 @@ const MomentumTrendFilterSchema = z.object({
 });
 
 /**
+ * Market-wide regime filter gating ENTRY — the portfolio-level counterpart to
+ * `trendFilter`. Where `trendFilter` reads a symbol's OWN candles (25
+ * independent per-symbol decisions that in practice correlate around shared
+ * macro turning points — confirmed to make things WORSE, not better, across
+ * every period tested; see docs/research/momentum-regime-robustness.md),
+ * this reads ONE shared reference symbol's trend (BTC — see
+ * `Strategy.capabilities.referenceSymbol`, fixed per plugin, not
+ * per-profile) and applies the SAME bias to every symbol's entries: a long
+ * opens only while the reference is above its own long-term line, a short
+ * only while it is below — one decision for the whole book instead of 25
+ * that happen to correlate. Independently toggleable from `trendFilter`;
+ * both may be enabled together. Exit logic is untouched, same as
+ * `trendFilter`.
+ *
+ * BACKTEST-ONLY as of this writing: the live worker does not yet stream the
+ * reference symbol's candles, so `TickInput.reference` is never populated on
+ * a live tick even for a profile with this enabled. The gate FAILS CLOSED in
+ * that case (`insufficient-history`-equivalent) — every entry is suppressed,
+ * not silently ignored — so enabling this on a live profile today visibly
+ * stops it trading rather than trading on missing data. Do not enable on a
+ * live profile until the live plumbing lands.
+ */
+const MomentumRegimeFilterSchema = z.object({
+  enabled: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Only enter with the wider market: a long only while the reference market (BTC) is above its own long-term trend line, a short only while it is below. Backtest-only for now — enabling this on a LIVE profile stops it trading entirely, since the live feed for this is not wired up yet.',
+    ),
+  maType: z
+    .enum(['sma', 'ema'])
+    .default('sma')
+    .describe('Moving-average type for the reference market’s long-term trend line.'),
+  period: z
+    .number()
+    .int()
+    .min(2)
+    .max(400)
+    .default(50)
+    .describe(
+      'Trend-line lookback in candles, on the strategy candle interval, applied to the reference market. Default 50 — testing on this basket found longer periods (100, 200) perform worse, not better, unlike a typical per-symbol trend filter.',
+    ),
+  requireRising: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Also require the reference trend line itself to confirm the move: rising for a long, falling for a short — not just the reference price on the right side of it.',
+    ),
+  slopeLookbackBars: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(10)
+    .describe(
+      'When "require rising" is on, how many candles back to measure the reference line’s slope.',
+    ),
+});
+
+/**
  * Entry overextension guard. The trend filter is a FLOOR (enter only above the
  * line); this is the CEILING (skip an entry while price sits too far above its
  * baseline). A lagging EMA cross confirms late on a fast mover, so by the time
@@ -387,16 +447,18 @@ export const MomentumConfigSchema = z.object({
   // as the single-direction modes, just without a flat gap waiting for "the"
   // direction this profile trades. A short leg (under 'short' or 'both')
   // DOES apply `trendFilter` (symmetric per side — see that schema's doc
-  // comment) but does NOT apply `entryExtension`, `atrTrailingStop`,
-  // `profitTrail`, or `protectiveStop` — those remaining gates/enhancements
-  // were built and tested for the long side only; mirroring them is
-  // deliberately out of scope for this pass (inert on a short leg, not
-  // misapplied — a 'both' profile's LONG leg still gets all of them).
+  // comment) and `regimeFilter` (also symmetric, market-wide rather than
+  // per-symbol — see its own doc comment) but does NOT apply
+  // `entryExtension`, `atrTrailingStop`, `profitTrail`, or `protectiveStop`
+  // — those remaining gates/enhancements were built and tested for the long
+  // side only; mirroring them is deliberately out of scope for this pass
+  // (inert on a short leg, not misapplied — a 'both' profile's LONG leg
+  // still gets all of them).
   direction: z
     .enum(['long', 'short', 'both'])
     .default('long')
     .describe(
-      "'long' (default) buys a cross-up and sells a cross-down/trailing-stop. 'short' sells a cross-down to open and buys back (covers) on a cross-up/trailing-stop bounce. 'both' does both, flipping directly from one side to the other on every cross instead of going flat between them. A short leg (under 'short' or 'both') uses the fast/slow EMA cross, the plain trailing-stop percentage, and — if configured — the macro trend filter (mirrored: a short only opens below the trend line). The extension guard, ATR trail, profit trail, and protective stop still apply only to the long leg for now.",
+      "'long' (default) buys a cross-up and sells a cross-down/trailing-stop. 'short' sells a cross-down to open and buys back (covers) on a cross-up/trailing-stop bounce. 'both' does both, flipping directly from one side to the other on every cross instead of going flat between them. A short leg (under 'short' or 'both') uses the fast/slow EMA cross, the plain trailing-stop percentage, and — if configured — the macro trend filter and the market-wide regime filter (both mirrored: a short only opens below the line). The extension guard, ATR trail, profit trail, and protective stop still apply only to the long leg for now.",
     ),
   entrySizing: MomentumEntrySizingSchema,
   // Reserve cap is account-wide, so it is profile-level only (excluded from the
@@ -432,6 +494,11 @@ export const MomentumConfigSchema = z.object({
   // Macro trend filter gating entries (exit logic untouched). Off by default so
   // existing configs and golden replays stay byte-identical.
   trendFilter: MomentumTrendFilterSchema.optional(),
+  // Market-wide (BTC-anchored) regime gate, independent of trendFilter — see
+  // its own doc comment for why this is a SEPARATE mechanism, not a
+  // duplicate. Off by default; backtest-only today (fails closed on live —
+  // see the schema's own warning).
+  regimeFilter: MomentumRegimeFilterSchema.optional(),
   // Entry overextension guard: a CEILING on how far above its baseline price may
   // sit at entry (the trend filter is the floor). Seeded on by the create-profile
   // default; an absent block reads as off in the unparsed worker config, so
@@ -553,6 +620,8 @@ export const MomentumStateSchema = z.object({
         'falling-trend',
         'above-trend',
         'rising-trend',
+        'against-regime',
+        'regime-insufficient-history',
         'overextended',
         'extension-insufficient-history',
         'sizing-unconfigured',

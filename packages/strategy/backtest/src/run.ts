@@ -73,6 +73,15 @@ export interface RunBacktestOptions<C, S, B extends Readonly<Record<string, unkn
   readonly quoteAsset: string;
   readonly symbolInfos: readonly SymbolInfo[];
   /**
+   * `SymbolInfo` for `strategy.capabilities.referenceSymbol`. Required
+   * whenever the strategy declares one (the reference symbol may not itself
+   * be a traded symbol in `request.symbols`/`symbolInfos`, e.g. testing a
+   * BTC-anchored regime gate on an altcoin-only basket) — a strategy that
+   * declares `referenceSymbol` but gets no matching data here never receives
+   * `TickInput.reference` at all, same as if `referenceWindow` were omitted.
+   */
+  readonly referenceSymbolInfo?: SymbolInfo;
+  /**
    * Candles consumed for indicator warm-up before any tick fires. The data
    * source is expected to stream this many extra candles before the
    * intended window so the first traded candle already has valid indicators.
@@ -104,6 +113,22 @@ export interface RunBacktestOptions<C, S, B extends Readonly<Record<string, unkn
    */
   readonly auxiliaryWindows?: (args: {
     readonly symbol: string;
+    readonly asOfMs: number;
+  }) => Partial<Record<CandleInterval, readonly Candle[]>>;
+  /**
+   * Candle windows for `strategy.capabilities.referenceSymbol` — a FIXED
+   * symbol, unlike `auxiliaryWindows` which is keyed per traded symbol —
+   * supplied on every tick regardless of which symbol is being replayed and
+   * merged into `TickInput.reference.candlesByInterval`. Not built on
+   * `auxiliaryWindows`: that mechanism targets `market.candlesByInterval` and
+   * the streamed interval always wins the key collision there, so it silently
+   * contributes nothing when the strategy's own `candleInterval` matches the
+   * regime interval (exactly the '1d' case this exists for). Ignored when the
+   * strategy declares no `capabilities.referenceSymbol`. `asOfMs` is the
+   * current candle's closeTime; the provider MUST return only candles closed
+   * at or before it (no lookahead), same contract as `auxiliaryWindows`.
+   */
+  readonly referenceWindow?: (args: {
     readonly asOfMs: number;
   }) => Partial<Record<CandleInterval, readonly Candle[]>>;
   /**
@@ -376,6 +401,30 @@ export async function runBacktest<C, S, B extends Readonly<Record<string, unknow
       indicatorsByInterval,
       symbolInfo,
     };
+    // Market-wide regime anchor, not `market` — a FIXED symbol regardless of
+    // which one is being replayed. Present only when the strategy declares
+    // `capabilities.referenceSymbol` AND the caller supplied its SymbolInfo;
+    // absent (not an empty snapshot) otherwise, matching `profileKv`'s
+    // opt-in-only presence below. `currentPrice` uses the reference window's
+    // own last close (not this tick's traded-symbol price) since the two are
+    // different instruments — a gate reading `reference` never touches
+    // `market.currentPrice` for it.
+    const referenceCandles = strategy.capabilities.referenceSymbol
+      ? (opts.referenceWindow?.({ asOfMs: candle.closeTimeMs }) ?? {})
+      : {};
+    // The reference feed is always fetched at THIS run's streamed interval
+    // (see backtest-runner.ts's `referenceWindow`), so its last close lives
+    // under the same `interval` key `market.candlesByInterval` uses above.
+    const referenceLast = referenceCandles[interval]?.at(-1);
+    const reference: MarketSnapshot | undefined =
+      strategy.capabilities.referenceSymbol && opts.referenceSymbolInfo && referenceLast
+        ? {
+            symbol: strategy.capabilities.referenceSymbol,
+            currentPrice: referenceLast.close,
+            candlesByInterval: referenceCandles,
+            symbolInfo: opts.referenceSymbolInfo,
+          }
+        : undefined;
     const input: TickInput<C, S, B> = {
       clock,
       rng,
@@ -400,6 +449,7 @@ export async function runBacktest<C, S, B extends Readonly<Record<string, unknow
       // Cross-symbol KV: mirror the live read gating — only a strategy
       // that opts in sees the store, so per-symbol strategies stay byte-identical.
       ...(strategy.capabilities.needsProfileKv ? { profileKv: executor.kvSnapshot() } : {}),
+      ...(reference ? { reference } : {}),
     };
 
     // Fail closed on a schema-invalid bundle, matching the live tick boundary:

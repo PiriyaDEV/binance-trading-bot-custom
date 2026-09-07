@@ -284,6 +284,15 @@ export async function runProfileBacktest(
   );
 
   const symbolInfos = await Promise.all(params.symbols.map((s) => deps.getSymbolInfo(s)));
+  // A market-wide regime anchor (e.g. BTC) the strategy reads on every tick
+  // regardless of which symbol is being replayed — distinct from the
+  // per-traded-symbol REGIME_DAILY_INTERVAL backfill below, which feeds the
+  // unrelated post-hoc regime-breakdown report. Fetched once, outside the
+  // per-symbol loop, only when the strategy actually declares it via
+  // `capabilities.referenceSymbol` — absent for every other strategy, so this
+  // costs nothing when unused.
+  const referenceSymbol = strategy.capabilities.referenceSymbol;
+  const referenceSymbolInfo = referenceSymbol ? await deps.getSymbolInfo(referenceSymbol) : null;
   // Equity is denominated in one quote asset; a basket mixing quotes (e.g.
   // BTCUSDT + ETHBTC) cannot be valued on a single curve, so reject it cleanly.
   const quoteAsset = symbolInfos[0]?.quoteAsset ?? '';
@@ -403,6 +412,42 @@ export async function runProfileBacktest(
     }
   }
 
+  // Reference-symbol backfill: one extra (symbol, strategyInterval) pair,
+  // regardless of whether the reference symbol is itself traded in this run.
+  // A regime gate needs deeper history than the strategy interval's own
+  // warmup (its `period` can run up to 400), so this always fetches with the
+  // same extended horizon the REGIME_DAILY_INTERVAL backfill above uses —
+  // skipped only when the pair is already cached from the loop above (same
+  // key), since `backfillCandles` is itself idempotent but a redundant DB
+  // round trip is still worth avoiding here.
+  const referenceKey = referenceSymbol ? `${referenceSymbol}|${strategyInterval}` : null;
+  if (referenceSymbol && referenceKey && !candlesByKey.has(referenceKey)) {
+    const referenceFromMs = Math.min(loadFromMs, params.fromMs - REGIME_DAILY_WARMUP_MS);
+    await backfillCandles(
+      {
+        getKlines: deps.getKlines,
+        findGaps: (s, i, f, t) => repo.candles.findGaps(deps.db, s, i, f, t),
+        insertCandles: (rows) => repo.candles.insertNew(deps.db, rows),
+        clock: deps.clock,
+        logger: deps.logger,
+      },
+      {
+        symbol: referenceSymbol,
+        interval: strategyInterval,
+        fromMs: referenceFromMs,
+        toMs: params.toMs,
+      },
+    );
+    const rows = await repo.candles.getRange(
+      deps.db,
+      referenceSymbol,
+      strategyInterval,
+      new Date(referenceFromMs),
+      new Date(params.toMs),
+    );
+    candlesByKey.set(referenceKey, rows.map(rowToCandle));
+  }
+
   const tickSeries = buildTickSeries(
     params.symbols,
     candlesByKey,
@@ -501,6 +546,10 @@ export async function runProfileBacktest(
   // keyed by symbol (the interval is fixed). Same monotonic-asOf slice as the
   // bundle's signal cursor, so per-tick cost is O(1) amortised, no lookahead.
   const regimeCursor = new Map<string, number>();
+  // Same forward-only cursor pattern as `regimeCursor`, keyed by a fixed
+  // string since the reference symbol never varies within a run (unlike
+  // `regimeCursor`, which is keyed per traded symbol).
+  const referenceCursor = new Map<string, number>();
 
   const report = await runBacktest({
     strategy: strategy as AnyStrategy,
@@ -527,6 +576,7 @@ export async function runProfileBacktest(
     initialBalances: { [quoteAsset]: params.initialQuoteBalance },
     quoteAsset,
     symbolInfos,
+    ...(referenceSymbolInfo ? { referenceSymbolInfo } : {}),
     // Cede the loop before the engine's CPU-bound metric pass so a long run's
     // heartbeat / lock renewal survives the gap after the last tick's yield.
     onBeforeMetrics: () => new Promise<void>((resolve) => setImmediate(resolve)),
@@ -549,6 +599,21 @@ export async function runProfileBacktest(
       const daily = candlesByKey.get(`${symbol}|${REGIME_DAILY_INTERVAL}`) ?? [];
       return { [REGIME_DAILY_INTERVAL]: regimeWindowAsOf(daily, asOfMs, regimeCursor, symbol) };
     },
+    ...(referenceSymbol && referenceKey
+      ? {
+          referenceWindow: ({ asOfMs }: { asOfMs: number }) => {
+            const referenceCandles = candlesByKey.get(referenceKey) ?? [];
+            return {
+              [strategyInterval]: regimeWindowAsOf(
+                referenceCandles,
+                asOfMs,
+                referenceCursor,
+                'reference',
+              ),
+            };
+          },
+        }
+      : {}),
     onProgress: (processed) => {
       // Cancellation is checked first so an abandoned run stops promptly.
       // runBacktest invokes this synchronously inside the replay loop, so a

@@ -1,6 +1,6 @@
 # Momentum strategy: the search for a regime-robust config
 
-**Status: open problem.** This log exists so we don't re-run the same failed experiments twice. It records what was tried, the real backtest numbers, and why each attempt was rejected — for the `momentum` strategy (`packages/strategy/momentum`) on a 25-symbol USDT basket, daily candles, `direction: 'both'` (flips directly between long and short on an EMA cross).
+**Status: meaningful progress, not fully solved.** `regimeFilter` at period 50 (see below) is the best-known config so far — genuinely better than every prior attempt, still not a full fix. This log exists so we don't re-run the same failed experiments twice. It records what was tried, the real backtest numbers, and why each attempt was rejected — for the `momentum` strategy (`packages/strategy/momentum`) on a 25-symbol USDT basket, daily candles, `direction: 'both'` (flips directly between long and short on an EMA cross).
 
 ## The goal
 
@@ -74,11 +74,35 @@ Every one of these was a real backtest, not a guess. None solved the regime-depe
 
 A single per-symbol technical filter — trend gate at any tested period, long-only, wider confirmation margin, slower EMA — **cannot** make this fast EMA-cross strategy regime-robust. The failure mode is structural: the strategy has no way to know "the market has changed character," only "this one symbol crossed this one line," and by the time enough symbols cross together to look like a regime shift, the move is often already exhausted or the correlated entries compound risk instead of diversifying it.
 
-## Recommended next directions (not yet attempted)
+## `regimeFilter`: a market-wide (BTC-anchored) gate — meaningful progress, not a full fix
 
-1. **Market-wide regime signal, not per-symbol.** One indicator — e.g. BTC's own long-term trend, or basket breadth (% of the 25 symbols above their own trend line) — decides whether the WHOLE portfolio is biased long, biased short, or reduced/paused, instead of 25 independent per-symbol gates that happen to correlate. This is the current front-runner: reuses most of the existing plumbing, just moves the gate from "per-symbol tick" to "portfolio-level bias applied once per tick cycle."
-2. **Accept regime-specificity, add a portfolio allocator.** Keep this config as a bear/chop specialist; wrap it with an allocator that reduces size or pauses trading when regime conditions are unfavorable, rather than trying to make the underlying signal itself regime-proof.
-3. **A second, different strategy for bull markets** (e.g. a breakout/momentum long-only system tuned for trending-up conditions), switched by a regime classifier — genuinely different tools for genuinely different market character, instead of forcing one EMA-cross engine to do both jobs.
+Implemented as the first of the three "next directions" below: a NEW, independently-toggleable config block (`regimeFilter`, alongside the existing `trendFilter`) that gates every symbol's entries off ONE shared reference market's own trend — BTC — instead of 25 per-symbol decisions that happen to correlate. Mechanically: `Strategy.capabilities.referenceSymbol` (new, static per plugin) tells the worker/backtest engine to also supply BTC's own candles on every tick via a new `TickInput.reference` field, regardless of which symbol is being evaluated; `regimeGate()` (`packages/strategy/momentum/src/tick.ts`) compares BTC's OWN price to BTC's OWN trend line, and blocks whichever side (long/short) disagrees with it. Backtest-only for now — the live worker does not yet stream a pinned BTC feed, so `regimeFilter.enabled: true` on a LIVE profile fails every entry closed (safe, not silently wrong, but not tradeable yet either).
+
+Full period sweep, same bear/bull windows as every other experiment above:
+
+| Period | Bear return | Bear alpha | Bear PF | Bear OOS (alpha/PF/trades) | Bull return | Bull alpha | Bull PF | Bull OOS (alpha/PF/trades) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| _no filter (baseline)_ | +13.7% | +71.3% | 2.47 | +3.6% / 3.18 / 33 | +17.1% | −53.2% | 1.82 | −5.7% / 1.82\* / 283\* |
+| **50** | **+18.7%** | **+74.5%** | **3.01** | −1.5% / 2.51 / 12 | **+23.0%** | **−47.4%** | **1.35** | **−4.5% / 2.94 / 34** |
+| 100 | +3.5% | +59.3% | 1.09 | +9.5% / 0 / 2 | −24.4% | −94.7% | 0.45 | +3.3% / 3.34 / 37 |
+| 200 | −15.9% | +40.0% | 0.52 | +24.7% / — / 0 | −30.6% | −101.0% | 0.30 | −3.3% / 4.79 / 19 |
+
+_(\*baseline bull-year OOS profit factor/trade count shown is the overall figure; see the Failed fix attempts table above for the exact baseline row)_
+
+**Period 50 is the clear, unambiguous winner** — coincidentally (or not) the same period that was also the best-of-a-bad-lot for the old per-symbol `trendFilter` sweep. 100 and 200 both fail badly in BOTH years, the same non-monotonic "50 good, 100 bad, 200 worse" pattern seen before, now confirmed on a structurally different mechanism — worth treating as a real property of this basket/EMA(5,13) pairing, not a coincidence to wave away.
+
+**Honest assessment of period=50:** this is the best result of the entire investigation, and a genuine, meaningful improvement — not a full fix.
+
+- Bear year: beats the no-filter baseline outright (higher return, higher alpha, higher PF, half the trades for the same or better edge).
+- Bull year: total return is POSITIVE (+23.0%) for the first time on any gated variant, and out-of-sample finally has a trustworthy sample size (34 trades, clearing the 20-trade minimum for the first time in a bull window) with alpha nearly flat (−4.5%) and PF a healthy 2.94.
+- **But full-window bull alpha is still negative (−47.4%)** — better than baseline's −53.2% and dramatically better than every per-symbol attempt (−89% to −162%), but still a real underperformance against a fee-free +70%-return buy-and-hold. This is a large bar: no risk-managed active strategy should be expected to fully close a 70%-in-one-year gap. The practical read is that `regimeFilter` at period 50 converts "loses badly in a strong bull year" into "makes real money in a strong bull year, just less than doing nothing would have" — a materially different, much more defensible risk profile, not a solved problem.
+
+## Recommended next directions
+
+1. ~~Market-wide regime signal, not per-symbol~~ — **done, see above.** `regimeFilter` at period 50 is now the best-known config; further tuning of ITS OWN parameters (`requireRising` slope veto untested, `maType:'ema'` untested) is a natural next cheap experiment before moving to something structurally new.
+2. **Wire it live.** The mechanism is proven in backtest; the live worker still needs a pinned BTCUSDT subscription (`apps/worker/src/market-data/subscriptions-manager.ts`) to actually populate `TickInput.reference` outside a backtest — see the wider roadmap plan (`~/.claude/plans/swirling-popping-reddy.md`) for where this fits alongside the Futures execution work.
+3. **Accept the remaining gap, add a portfolio allocator.** period=50 narrows but doesn't close the bull-year underperformance; a size-reducing or pausing allocator layered on top (rather than a pure entry-time gate) could close more of the remaining gap without another architecture change.
+4. **A second, different strategy for strong bull markets**, switched by a regime classifier — still viable if 1–3 plateau, but no longer the only path forward now that (1) has shown real, measurable progress.
 
 ## Methodology notes (for whoever continues this)
 
