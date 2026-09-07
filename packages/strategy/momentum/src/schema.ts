@@ -183,9 +183,9 @@ const MomentumRegimeFilterSchema = z.object({
     .int()
     .min(2)
     .max(400)
-    .default(50)
+    .default(30)
     .describe(
-      'Trend-line lookback in candles, on the strategy candle interval, applied to the reference market. Default 50 — testing on this basket found longer periods (100, 200) perform worse, not better, unlike a typical per-symbol trend filter.',
+      'Trend-line lookback in candles, on the strategy candle interval, applied to the reference market. Default 30 — a fine-tune sweep (30/40/50/60/70/100/200) on this basket found the best-balanced result there; the landscape is bumpy, not a smooth curve, and every period beyond ~60 falls off sharply (see docs/research/momentum-regime-robustness.md).',
     ),
   requireRising: z
     .boolean()

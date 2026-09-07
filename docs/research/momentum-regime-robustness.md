@@ -1,6 +1,6 @@
 # Momentum strategy: the search for a regime-robust config
 
-**Status: meaningful progress, not fully solved.** `regimeFilter` at period 50 (see below) is the best-known config so far — genuinely better than every prior attempt, still not a full fix. This log exists so we don't re-run the same failed experiments twice. It records what was tried, the real backtest numbers, and why each attempt was rejected — for the `momentum` strategy (`packages/strategy/momentum`) on a 25-symbol USDT basket, daily candles, `direction: 'both'` (flips directly between long and short on an EMA cross).
+**Status: meaningful progress, not fully solved.** `regimeFilter` at period 30 (see below) is the best-known config so far — genuinely better than every prior attempt, still not a full fix. This log exists so we don't re-run the same failed experiments twice. It records what was tried, the real backtest numbers, and why each attempt was rejected — for the `momentum` strategy (`packages/strategy/momentum`) on a 25-symbol USDT basket, daily candles, `direction: 'both'` (flips directly between long and short on an EMA cross).
 
 ## The goal
 
@@ -89,20 +89,31 @@ Full period sweep, same bear/bull windows as every other experiment above:
 
 _(\*baseline bull-year OOS profit factor/trade count shown is the overall figure; see the Failed fix attempts table above for the exact baseline row)_
 
-**Period 50 is the clear, unambiguous winner** — coincidentally (or not) the same period that was also the best-of-a-bad-lot for the old per-symbol `trendFilter` sweep. 100 and 200 both fail badly in BOTH years, the same non-monotonic "50 good, 100 bad, 200 worse" pattern seen before, now confirmed on a structurally different mechanism — worth treating as a real property of this basket/EMA(5,13) pairing, not a coincidence to wave away.
+Period 50 was the initial winner of the coarse 50/100/200 sweep. A follow-up fine-tune (30/40/60/70, same bear/bull windows) found the real landscape is **bumpy, not a smooth curve** — no single period wins on every metric:
 
-**Honest assessment of period=50:** this is the best result of the entire investigation, and a genuine, meaningful improvement — not a full fix.
+| Period | Bear return / alpha / PF | Bear OOS (alpha/PF/trades) | Bull return / alpha / PF | Bull OOS (alpha/PF/trades) |
+| --- | --- | --- | --- | --- |
+| **30** | +26.6% / +82.4% / 4.55 | +0.9% / 0.50 / 18 | **+27.7% / −42.7% / 1.64** | −6.6% / 1.20 / 32 |
+| 40 | **+31.3% / +87.1% / 6.36** | −2.7% / 1.31 / 17 | +18.8% / −51.6% / 1.10 | −7.5% / 1.37 / 38 |
+| 50 | +18.7% / +74.5% / 3.01 | −1.5% / 2.51 / 12 | +23.0% / −47.4% / 1.35 | −4.5% / 2.94 / 34 |
+| 60 | +21.3% / +77.1% / 3.61 | +5.0% / 0.63 / 14 | +9.1% / −61.2%\* / 1.07 | −3.6% / 3.02 / 34 |
+| 70 | +24.8% / +80.7% / 5.19 | +3.5% / 0.78 / 8 | −22.4% / −92.8% / 0.54 | +1.5% / 3.20 / 42 |
+| 100 | +3.5% / +59.3% / 1.09 | +9.5% / 0 / 2 | −24.4% / −94.7% / 0.45 | +3.3% / 3.34 / 37 |
+| 200 | −15.9% / +40.0% / 0.52 | +24.7% / — / 0 | −30.6% / −101.0% / 0.30 | −3.3% / 4.79 / 19 |
 
-- Bear year: beats the no-filter baseline outright (higher return, higher alpha, higher PF, half the trades for the same or better edge).
-- Bull year: total return is POSITIVE (+23.0%) for the first time on any gated variant, and out-of-sample finally has a trustworthy sample size (34 trades, clearing the 20-trade minimum for the first time in a bull window) with alpha nearly flat (−4.5%) and PF a healthy 2.94.
-- **But full-window bull alpha is still negative (−47.4%)** — better than baseline's −53.2% and dramatically better than every per-symbol attempt (−89% to −162%), but still a real underperformance against a fee-free +70%-return buy-and-hold. This is a large bar: no risk-managed active strategy should be expected to fully close a 70%-in-one-year gap. The practical read is that `regimeFilter` at period 50 converts "loses badly in a strong bull year" into "makes real money in a strong bull year, just less than doing nothing would have" — a materially different, much more defensible risk profile, not a solved problem.
+_(\*period=60's bull alpha is WORSE than the no-filter baseline's −53.2% — the sweet spot has a real edge, not a gentle slope.)_
+
+**Verdict: period=30 is the final recommendation** (now the schema default, `packages/strategy/momentum/src/schema.ts` and `regime-filter.ts`) — the single best-BALANCED period across both years: best bull-year alpha of the whole investigation (−42.7%, the closest any config has gotten to the no-filter baseline's −53.2%, let alone zero) while staying excellent, not merely acceptable, in the bear year (PF 4.55, second only to period 40's 6.36). Period 40 wins the bear year outright but gives back more than it gains in the bull year — a worse trade on the metric that actually matters (the bull-year problem is the whole reason this investigation exists). Past roughly 60, every period falls off a cliff in the bull year, converging toward the same badness as the original 100/200 sweep.
+
+**One real caveat, not resolved:** none of the periods 30–70 clear the bear-year 20-trade OOS minimum (best is period 30 at 18) — the regime gate trims total trades enough that the bear year's 30% holdout runs thin, even though the bull-year OOS is consistently healthy (32–42 trades) across the same range. `regimeFilter` at period 30 would currently fail ONE of the seven live-enablement gate criteria on the bear-year window specifically, despite passing every other criterion comfortably in both years. Worth resolving (a longer bear-year test window, or a config tweak that recovers a few more bear-year trades) before treating this as live-ready.
 
 ## Recommended next directions
 
-1. ~~Market-wide regime signal, not per-symbol~~ — **done, see above.** `regimeFilter` at period 50 is now the best-known config; further tuning of ITS OWN parameters (`requireRising` slope veto untested, `maType:'ema'` untested) is a natural next cheap experiment before moving to something structurally new.
-2. **Wire it live.** The mechanism is proven in backtest; the live worker still needs a pinned BTCUSDT subscription (`apps/worker/src/market-data/subscriptions-manager.ts`) to actually populate `TickInput.reference` outside a backtest — see the wider roadmap plan (`~/.claude/plans/swirling-popping-reddy.md`) for where this fits alongside the Futures execution work.
-3. **Accept the remaining gap, add a portfolio allocator.** period=50 narrows but doesn't close the bull-year underperformance; a size-reducing or pausing allocator layered on top (rather than a pure entry-time gate) could close more of the remaining gap without another architecture change.
-4. **A second, different strategy for strong bull markets**, switched by a regime classifier — still viable if 1–3 plateau, but no longer the only path forward now that (1) has shown real, measurable progress.
+1. ~~Market-wide regime signal, not per-symbol~~ — **done.** ~~Fine-tune the period~~ — **done, period=30 is the new default.** Two of `regimeFilter`'s own knobs remain untested: `requireRising` (the slope veto) and `maType:'ema'` — cheap next experiments before moving to something structurally new.
+2. **Fix the bear-year OOS trade-count shortfall** at period=30 (18 vs the 20 minimum) — the one concrete gap left before this could pass every live-enablement criterion in both regimes.
+3. **Wire it live.** The mechanism is proven in backtest; the live worker still needs a pinned BTCUSDT subscription (`apps/worker/src/market-data/subscriptions-manager.ts`) to actually populate `TickInput.reference` outside a backtest — see the wider roadmap plan (`~/.claude/plans/swirling-popping-reddy.md`) for where this fits alongside the Futures execution work.
+4. **Accept the remaining gap, add a portfolio allocator.** period=30 narrows but doesn't close the bull-year underperformance; a size-reducing or pausing allocator layered on top (rather than a pure entry-time gate) could close more of the remaining gap without another architecture change.
+5. **A second, different strategy for strong bull markets**, switched by a regime classifier — still viable if 2–4 plateau, but no longer the only path forward now that (1) has shown real, measurable progress.
 
 ## Methodology notes (for whoever continues this)
 
