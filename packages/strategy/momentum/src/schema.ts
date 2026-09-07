@@ -84,13 +84,18 @@ const MomentumProtectiveStopSchema = z.object({
 });
 
 /**
- * Macro trend filter gating ENTRY. When enabled, a fresh long opens only while
- * price trades above a long-term moving average, so the strategy sits out a
- * confirmed downtrend instead of getting whipsawed by false EMA cross-ups on
- * bear rallies (the momentum engine's main failure mode). Exit logic is
- * untouched: the trailing stop and EMA cross-down still manage an open long.
- * The line is computed on the strategy's own `candleInterval`, so it is sized
- * for a daily-ish interval (period 200 on `1d` is the classic macro trend).
+ * Macro trend filter gating ENTRY, symmetric across sides: when enabled, a
+ * fresh LONG opens only while price trades above a long-term moving average,
+ * and a fresh SHORT (under `direction: 'short'`/`'both'`) opens only while
+ * price trades below it — so the strategy sits out whichever direction is
+ * fighting the confirmed trend, instead of getting whipsawed by false EMA
+ * crosses against it (the ungated failure mode: a strong uptrend keeps firing
+ * short entries the EMA cross alone can't tell from a real top, and the mirror
+ * in a downtrend). Exit logic is untouched: the trailing stop and opposite
+ * EMA cross still manage an open position on either side. The line is
+ * computed on the strategy's own `candleInterval`, so it is sized for a
+ * daily-ish interval (period 200 on `1d` is the classic macro trend). One
+ * config block protects both legs — there is no separate short-side filter.
  * Optional so the live worker, which reads stored config WITHOUT schema-parsing,
  * treats an absent block as disabled via optional chaining.
  */
@@ -99,7 +104,7 @@ const MomentumTrendFilterSchema = z.object({
     .boolean()
     .default(false)
     .describe(
-      'Only enter while price is above the long-term trend line, so the bot sits out confirmed downtrends instead of buying into them. Exits are unaffected.',
+      'Only enter with the trend: a long only while price is above the long-term trend line, a short only while it is below. The bot sits out confirmed moves against it instead of trading into them. Exits are unaffected.',
     ),
   maType: z
     .enum(['sma', 'ema'])
@@ -114,16 +119,19 @@ const MomentumTrendFilterSchema = z.object({
     .describe(
       'Trend-line lookback in candles, on the strategy candle interval. 200 on a daily interval is the classic macro trend; a shorter period reacts faster.',
     ),
-  // Slope veto. Price-above-line alone cannot tell an early bull (price below a
-  // lagging slow line while a new uptrend starts) from a bear rally (price pops
-  // above a fast line that is still falling). Requiring the line itself to rise
-  // lets a faster `period` catch the early bull while the slope rejects rallies
-  // on a still-declining line. Off keeps the simpler price-only gate.
+  // Slope veto, symmetric per side. On the long side, price-above-line alone
+  // cannot tell an early bull (price below a lagging slow line while a new
+  // uptrend starts) from a bear rally (price pops above a fast line that is
+  // still falling); on the short side it's the mirror (a dip below a still-
+  // rising line is a bull pullback, not a real top). Requiring the line itself
+  // to move with the trade lets a faster `period` catch an early move while the
+  // slope rejects the opposite-direction fakeout. Off keeps the simpler
+  // price-vs-line-only gate.
   requireRising: z
     .boolean()
     .default(false)
     .describe(
-      'Also require the trend line itself to be rising, not just price above it. This rejects entries on bear rallies that pop above a line that is still falling. Off keeps the simpler price-above-line gate.',
+      'Also require the trend line itself to confirm the move: rising for a long, falling for a short — not just price on the right side of it. This rejects entries on a fakeout against a line still moving the other way. Off keeps the simpler price-vs-line-only gate.',
     ),
   slopeLookbackBars: z
     .number()
@@ -378,16 +386,17 @@ export const MomentumConfigSchema = z.object({
   // opposite cross or its own trailing stop — the same entry/exit mechanics
   // as the single-direction modes, just without a flat gap waiting for "the"
   // direction this profile trades. A short leg (under 'short' or 'both')
-  // does NOT apply `trendFilter`, `entryExtension`, `atrTrailingStop`,
-  // `profitTrail`, or `protectiveStop` — those gates/enhancements were built
-  // and tested for the long side only; mirroring them is deliberately out of
-  // scope for this first short-capable pass (inert on a short leg, not
+  // DOES apply `trendFilter` (symmetric per side — see that schema's doc
+  // comment) but does NOT apply `entryExtension`, `atrTrailingStop`,
+  // `profitTrail`, or `protectiveStop` — those remaining gates/enhancements
+  // were built and tested for the long side only; mirroring them is
+  // deliberately out of scope for this pass (inert on a short leg, not
   // misapplied — a 'both' profile's LONG leg still gets all of them).
   direction: z
     .enum(['long', 'short', 'both'])
     .default('long')
     .describe(
-      "'long' (default) buys a cross-up and sells a cross-down/trailing-stop. 'short' sells a cross-down to open and buys back (covers) on a cross-up/trailing-stop bounce. 'both' does both, flipping directly from one side to the other on every cross instead of going flat between them. A short leg (under 'short' or 'both') uses only the fast/slow EMA cross and the plain trailing-stop percentage — the trend filter, extension guard, ATR trail, profit trail, and protective stop apply only to the long leg for now.",
+      "'long' (default) buys a cross-up and sells a cross-down/trailing-stop. 'short' sells a cross-down to open and buys back (covers) on a cross-up/trailing-stop bounce. 'both' does both, flipping directly from one side to the other on every cross instead of going flat between them. A short leg (under 'short' or 'both') uses the fast/slow EMA cross, the plain trailing-stop percentage, and — if configured — the macro trend filter (mirrored: a short only opens below the trend line). The extension guard, ATR trail, profit trail, and protective stop still apply only to the long leg for now.",
     ),
   entrySizing: MomentumEntrySizingSchema,
   // Reserve cap is account-wide, so it is profile-level only (excluded from the
@@ -542,6 +551,8 @@ export const MomentumStateSchema = z.object({
         'insufficient-history',
         'below-trend',
         'falling-trend',
+        'above-trend',
+        'rising-trend',
         'overextended',
         'extension-insufficient-history',
         'sizing-unconfigured',

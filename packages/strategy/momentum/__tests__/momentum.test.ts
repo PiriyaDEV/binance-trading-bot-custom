@@ -2065,6 +2065,252 @@ describe('momentum.tick — trend filter', () => {
   });
 });
 
+// The short-side mirror of the long trend-filter suite above. Every series here
+// is the long suite's series reflected about 20 (newClose = 20 - oldClose):
+// since sma/ema are convex combinations (weights sum to 1), reflecting every
+// input reflects the line the same way, and a long's crossUp/above-trend/
+// falling-line case becomes a short's crossDown/below-trend/rising-line case
+// exactly (fastPrev<=slowPrev && fastNow>slowNow, reflected, is exactly
+// fastPrev>=slowPrev && fastNow<slowNow — crossDown). CROSS_UP reflected about
+// 20 is literally CROSS_DOWN, confirming the two fixtures were already an
+// intentional mirror pair.
+describe('momentum.tick — trend filter (short leg)', () => {
+  it('enters on a cross-down when the filter is OFF, even above the line', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '11', // reflects the long suite's below-line '9'
+        state: flat(),
+        config: cfg({ direction: 'short', trendFilter: { enabled: false, period: 3 } }),
+      }),
+    );
+    expect(out.decisions[0]?.type).toBe('place-order');
+  });
+
+  it('suppresses a short while price is above the trend line', () => {
+    // sma(3) of [10,12,6] = 9.33; live price 11 is above it -> sit out.
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '11',
+        state: flat(),
+        config: cfg({ direction: 'short', trendFilter: { enabled: true, period: 3 } }),
+      }),
+    );
+    expect(out.decisions).toEqual([{ type: 'noop' }]);
+    expect(out.metrics).toEqual([
+      { name: 'momentum.skip', value: 1, tags: { side: 'entry', reason: 'above-trend' } },
+    ]);
+    expect(out.nextState).toEqual({ ...flat(), entryBlocker: { reason: 'above-trend' } });
+  });
+
+  it('allows a short while price is below the trend line', () => {
+    // sma(3) = 9.33; live price 6 is below it -> enter on the cross-down.
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '6',
+        state: flat(),
+        config: cfg({ direction: 'short', trendFilter: { enabled: true, period: 3 } }),
+      }),
+    );
+    expect(out.decisions[0]).toMatchObject({
+      type: 'place-order',
+      intent: { side: 'SELL', positionSide: 'SHORT' },
+    });
+    expect(out.nextState.entryBlocker).toBeNull();
+  });
+
+  it('fails closed with a distinct reason when the window is too short', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN), // 4 candles, period 10 unreachable
+        currentPrice: '6',
+        state: flat(),
+        config: cfg({ direction: 'short', trendFilter: { enabled: true, period: 10 } }),
+      }),
+    );
+    expect(out.decisions).toEqual([{ type: 'noop' }]);
+    expect(out.metrics).toEqual([
+      { name: 'momentum.skip', value: 1, tags: { side: 'entry', reason: 'insufficient-history' } },
+    ]);
+  });
+
+  it('gates with an EMA trend line too', () => {
+    // ema(3) of CROSS_DOWN = 8; live price 11 is above it -> suppressed.
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '11',
+        state: flat(),
+        config: cfg({
+          direction: 'short',
+          trendFilter: { enabled: true, maType: 'ema', period: 3 },
+        }),
+      }),
+    );
+    expect(out.decisions).toEqual([{ type: 'noop' }]);
+  });
+
+  it('never gates an exit: an open short holds while the filter is enabled', () => {
+    // Flat price: no trail hit, no cross-up -> the short rides. The exit path
+    // never consults the trend filter, so enabling it injects no cover BUY.
+    const shortState: MomentumState = {
+      schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
+      entryPrice: '100',
+      highSinceEntry: null,
+      lowSinceEntry: '100',
+      profitHigh: null,
+      heldQuantity: '1',
+      lastEntryCandleMs: null,
+      profitTrailSinceMs: null,
+      entryBlocker: null,
+      protectiveStopBlocker: null,
+    };
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(['100', '100', '100', '100']),
+        currentPrice: '100',
+        state: shortState,
+        config: cfg({ direction: 'short', trendFilter: { enabled: true, period: 4 } }),
+      }),
+    );
+    const buys = out.decisions.filter((d) => d.type === 'place-order' && d.intent.side === 'BUY');
+    expect(buys).toHaveLength(0);
+  });
+
+  it('vetoes the short when price is below the line but the line is rising', () => {
+    // Reflects the long suite's "above the line but falling" veto series about
+    // 20: sma(3) three bars back = (6+6+8)/3 = 6.67 < sma(3) now = 9.33 ->
+    // rising. Price 6 is below the line, so only the slope veto can block here.
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(['6', '6', '8', '10', '12', '6']),
+        currentPrice: '6',
+        state: flat(),
+        config: cfg({
+          direction: 'short',
+          trendFilter: {
+            enabled: true,
+            maType: 'sma',
+            period: 3,
+            requireRising: true,
+            slopeLookbackBars: 3,
+          },
+        }),
+      }),
+    );
+    expect(out.decisions).toEqual([{ type: 'noop' }]);
+    expect(out.metrics).toEqual([
+      { name: 'momentum.skip', value: 1, tags: { side: 'entry', reason: 'rising-trend' } },
+    ]);
+  });
+
+  it('allows the short when price is below the line and the line is falling', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '6',
+        state: flat(),
+        config: cfg({
+          direction: 'short',
+          trendFilter: {
+            enabled: true,
+            maType: 'sma',
+            period: 3,
+            requireRising: true,
+            slopeLookbackBars: 1,
+          },
+        }),
+      }),
+    );
+    expect(out.decisions[0]).toMatchObject({
+      type: 'place-order',
+      intent: { side: 'SELL', positionSide: 'SHORT' },
+    });
+  });
+
+  it('leaves the price-only gate intact when requireRising is off (rising line, price below)', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(['6', '6', '8', '10', '12', '6']),
+        currentPrice: '6',
+        state: flat(),
+        config: cfg({
+          direction: 'short',
+          trendFilter: { enabled: true, maType: 'sma', period: 3 },
+        }),
+      }),
+    );
+    expect(out.decisions[0]).toMatchObject({
+      type: 'place-order',
+      intent: { side: 'SELL', positionSide: 'SHORT' },
+    });
+  });
+
+  it('vetoes on a rising EMA trend line too, not only SMA', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(['6', '6', '8', '10', '12', '6']),
+        currentPrice: '6',
+        state: flat(),
+        config: cfg({
+          direction: 'short',
+          trendFilter: {
+            enabled: true,
+            maType: 'ema',
+            period: 3,
+            requireRising: true,
+            slopeLookbackBars: 3,
+          },
+        }),
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.skip', value: 1, tags: { side: 'entry', reason: 'rising-trend' } },
+    ]);
+  });
+});
+
+// Proves the gate is genuinely symmetric under `direction: 'both'` — the SAME
+// config, unmodified, blocks a long below the line and a short above it, rather
+// than the long and short arms being two independently-tuned gates that happen
+// to share a config shape.
+describe('momentum.tick — trend filter (both directions, one config)', () => {
+  const both = cfg({ direction: 'both', trendFilter: { enabled: true, period: 3 } });
+
+  it('blocks a long entry below the trend line', () => {
+    const out = momentum.tick(
+      mkInput({ closes: mkCandles(CROSS_UP), currentPrice: '9', state: flat(), config: both }),
+    );
+    expect(out.nextState.entryBlocker?.reason).toBe('below-trend');
+  });
+
+  it('blocks a short entry above the trend line', () => {
+    const out = momentum.tick(
+      mkInput({ closes: mkCandles(CROSS_DOWN), currentPrice: '11', state: flat(), config: both }),
+    );
+    expect(out.nextState.entryBlocker?.reason).toBe('above-trend');
+  });
+
+  it('allows a long entry above the trend line', () => {
+    const out = momentum.tick(
+      mkInput({ closes: mkCandles(CROSS_UP), currentPrice: '14', state: flat(), config: both }),
+    );
+    expect(out.decisions[0]).toMatchObject({ type: 'place-order', intent: { side: 'BUY' } });
+  });
+
+  it('allows a short entry below the trend line', () => {
+    const out = momentum.tick(
+      mkInput({ closes: mkCandles(CROSS_DOWN), currentPrice: '6', state: flat(), config: both }),
+    );
+    expect(out.decisions[0]).toMatchObject({
+      type: 'place-order',
+      intent: { side: 'SELL', positionSide: 'SHORT' },
+    });
+  });
+});
+
 // entryBlocker is the queryable per-reason suppression breadcrumb the generic
 // worker path turns into action_log rows. The strategy's contract is only that a
 // suppressed tick sets a stable `{reason}` and an entry clears it to null; the

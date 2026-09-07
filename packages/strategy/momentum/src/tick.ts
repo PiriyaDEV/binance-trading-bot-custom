@@ -80,32 +80,50 @@ const entryMargin = (config: MomentumConfig): Decimal => {
 
 /**
  * Macro trend gate result. `pass` allows the entry. The block reasons are kept
- * distinct for observability: `below-trend` is a genuine sit-out (price under
- * the line); `falling-trend` is the slope veto (price is above the line but the
- * line is not rising, the bear-rally signature); `insufficient-history` is
- * fail-closed (the window is too short to compute the line, or its slope) — a
- * misconfiguration tell, e.g. a 200-period filter on a profile that has not
- * loaded 200 candles, which must not look like a normal downtrend on the metric.
+ * distinct for observability, and mirrored per side: on the long side,
+ * `below-trend` is a genuine sit-out (price under the line) and `falling-trend`
+ * is the slope veto (price is above the line but the line is not rising, the
+ * bear-rally signature); on the short side, `above-trend` and `rising-trend` are
+ * the exact mirrors (price over the line; price under the line but the line is
+ * not falling, the bull-pullback signature). `insufficient-history` is
+ * fail-closed on either side (the window is too short to compute the line, or
+ * its slope) — a misconfiguration tell, e.g. a 200-period filter on a profile
+ * that has not loaded 200 candles, which must not look like a normal
+ * against-the-trend sit-out on the metric.
  */
-type TrendGate = 'pass' | 'below-trend' | 'falling-trend' | 'insufficient-history';
+type TrendGate =
+  | 'pass'
+  | 'below-trend'
+  | 'falling-trend'
+  | 'above-trend'
+  | 'rising-trend'
+  | 'insufficient-history';
 
 const trendLine = (maType: 'sma' | 'ema', candles: readonly Candle[], period: number): Decimal =>
   maType === 'ema' ? ema(candles, period) : sma(candles, period);
 
 /**
- * Macro trend gate: an entry is allowed only while price trades above the
+ * Macro trend gate: a LONG entry is allowed only while price trades above the
  * configured long-term MA, and (when `requireRising`) only while that MA is
- * itself rising over the last `slopeLookbackBars`. Price-above-line alone cannot
- * separate an early bull from a bear rally; the slope veto rejects a pop above a
- * still-falling line. Disabled or absent => `pass`. Fail-closed: too little
- * history to compute the line, or to read it `slopeLookbackBars` candles back,
- * returns `insufficient-history` (suppress rather than guess). Exit logic does
- * not consult this — an open long is still managed by the trailing stop.
+ * itself rising over the last `slopeLookbackBars`; a SHORT entry is the exact
+ * mirror — allowed only below the line, and (when `requireRising`) only while
+ * the line is FALLING. Price-vs-line alone cannot separate an early reversal
+ * from a same-direction pullback; the slope veto rejects a long pop above a
+ * still-falling line, or a short dip below a still-rising one — the whipsaw
+ * pattern that made an ungated `direction: 'both'` lose badly in a trending
+ * market (a strong uptrend keeps firing short entries the EMA cross alone can't
+ * tell from a real top). One config block, symmetric by construction, so
+ * `trendFilter.enabled` protects whichever leg would trade against the trend.
+ * Disabled or absent => `pass`. Fail-closed: too little history to compute the
+ * line, or to read it `slopeLookbackBars` candles back, returns
+ * `insufficient-history` (suppress rather than guess). Exit logic does not
+ * consult this — an open position is still managed by its own trailing stop.
  */
 const trendGate = (
   config: MomentumConfig,
   candles: readonly Candle[],
   currentPrice: string,
+  side: 'long' | 'short',
 ): TrendGate => {
   const tf = config.trendFilter;
   if (tf?.enabled !== true) return 'pass';
@@ -124,10 +142,19 @@ const trendGate = (
   const maType = trendMaType(tf.maType);
   if (candles.length < period + k) return 'insufficient-history';
   const line = trendLine(maType, candles, period);
-  if (new Decimal(currentPrice).lte(line)) return 'below-trend';
+  const price = new Decimal(currentPrice);
+  if (side === 'long') {
+    if (price.lte(line)) return 'below-trend';
+    if (rising) {
+      const prevLine = trendLine(maType, candles.slice(0, candles.length - k), period);
+      if (line.lte(prevLine)) return 'falling-trend';
+    }
+    return 'pass';
+  }
+  if (price.gte(line)) return 'above-trend';
   if (rising) {
     const prevLine = trendLine(maType, candles.slice(0, candles.length - k), period);
-    if (line.lte(prevLine)) return 'falling-trend';
+    if (line.gte(prevLine)) return 'rising-trend';
   }
   return 'pass';
 };
@@ -230,7 +257,7 @@ export const computeTick = (input: MomentumInput): MomentumOutput => {
 
   if (config.direction === 'short') {
     return state.entryPrice === null
-      ? evaluateShortEntry(scoped, crossDown, lastCandle.closeTimeMs)
+      ? shortEntryWithTrendGate(scoped, crossDown, candles, lastCandle.closeTimeMs)
       : evaluateShortExit(scoped, state.entryPrice, crossUp, lastCandle, forceSell);
   }
 
@@ -240,11 +267,12 @@ export const computeTick = (input: MomentumInput): MomentumOutput => {
   // is the short tell: `evaluateShortEntry` is the only path that ever sets
   // it (to a non-null price), and every full exit clears it back to null
   // alongside `entryPrice` — so it doubles as a direction flag without a new
-  // state field. A short entry skips the long-only trend/extension gates
-  // below (same scope limit as `direction: 'short'` — see the config's own
-  // doc comment) since those gates were built and tested for the long side.
+  // state field. A short entry is gated by the same macro trend filter as a
+  // long entry (see `shortEntryWithTrendGate`) — the extension guard/ATR
+  // trail/profit trail/protective stop remain long-only for now (same scope
+  // limit as `direction: 'short'` — see the config's own doc comment).
   if (config.direction === 'both' && state.entryPrice === null && crossDown) {
-    return evaluateShortEntry(scoped, crossDown, lastCandle.closeTimeMs);
+    return shortEntryWithTrendGate(scoped, crossDown, candles, lastCandle.closeTimeMs);
   }
   if (config.direction === 'both' && state.entryPrice !== null && state.lowSinceEntry !== null) {
     return evaluateShortExit(scoped, state.entryPrice, crossUp, lastCandle, forceSell);
@@ -274,7 +302,7 @@ export const computeTick = (input: MomentumInput): MomentumOutput => {
       // trend line, so the strategy sits out confirmed downtrends instead of buying
       // false cross-ups on bear rallies. The skip reason distinguishes a genuine
       // below-trend sit-out from a too-short window (a misconfiguration tell).
-      const gate = trendGate(config, candles, market.currentPrice);
+      const gate = trendGate(config, candles, market.currentPrice, 'long');
       if (gate !== 'pass') {
         return hold(
           state,
@@ -613,11 +641,51 @@ const evaluateExit = (
 };
 
 /**
+ * Gate + dispatch for a short entry: runs the macro trend filter (side:
+ * `'short'`) before handing off to {@link evaluateShortEntry}, the mirror of
+ * how a long entry is gated inline in `computeTick` before `evaluateEntry`.
+ * Kept as a separate function (rather than inlined at both call sites — pure
+ * `direction: 'short'` and `'both'`) since the gate-then-dispatch shape is
+ * identical at both. Does NOT run the extension guard — that stays long-only
+ * (see `MomentumConfigSchema.direction`'s doc comment). Note: unlike the long
+ * path, `evaluateShortEntry` runs its own "already-entered-this-candle" check
+ * internally rather than that check living here first, so on a short entry the
+ * trend gate is evaluated before the already-entered guard (the long path
+ * checks the opposite order) — this only affects which reason a same-tick
+ * double-suppression logs, not behavior.
+ */
+const shortEntryWithTrendGate = (
+  input: MomentumInput,
+  crossDown: boolean,
+  candles: readonly Candle[],
+  candleCloseMs: number,
+): MomentumOutput => {
+  const { state, config, market } = input;
+  if (crossDown) {
+    const gate = trendGate(config, candles, market.currentPrice, 'short');
+    if (gate !== 'pass') {
+      return hold(
+        state,
+        [
+          log('debug', 'momentum: short entry suppressed by trend filter', {
+            symbol: market.symbol,
+            gate,
+          }),
+        ],
+        [skipMetric('entry', gate)],
+        { reason: gate },
+      );
+    }
+  }
+  return evaluateShortEntry(input, crossDown, candleCloseMs);
+};
+
+/**
  * Short entry: mirrors {@link evaluateEntry} for the opposite side — a
  * `SELL` with `positionSide: 'SHORT'` opens the position instead of a plain
- * `BUY`. Deliberately does not consult `trendGate`/`extensionGate`: those
- * gates are long-only for this first short-capable pass (see
- * `MomentumConfigSchema.direction`'s doc comment).
+ * `BUY`. The macro trend filter is applied by {@link shortEntryWithTrendGate}
+ * before this runs; the extension guard remains long-only for this first
+ * short-capable pass (see `MomentumConfigSchema.direction`'s doc comment).
  */
 const evaluateShortEntry = (
   input: MomentumInput,
