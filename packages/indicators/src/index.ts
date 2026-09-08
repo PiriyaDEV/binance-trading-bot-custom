@@ -8,6 +8,16 @@ import type { Candle } from '@app/strategy-core';
  */
 export type CandleWindow = readonly Candle[];
 
+/**
+ * Wilder's Average Directional Index (trend strength, 0-100) — re-exported
+ * from the `rating/` module's vendored-indicator adapter rather than
+ * reimplemented here. Unlike every throwing indicator below, this one
+ * returns `null` on an insufficient window instead of throwing: a caller
+ * gating a strategy decision on "is the trend strong enough" needs a value
+ * it can treat as "not yet, hold the default" rather than a crash.
+ */
+export { adx } from './rating/adapter.js';
+
 const requireNonEmpty = (w: CandleWindow, fn: string): void => {
   if (w.length === 0) {
     throw new Error(`@app/indicators/${fn}: empty candle window`);

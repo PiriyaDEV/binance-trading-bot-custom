@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Decimal } from '@app/money';
+import { adx } from '@app/indicators';
 import {
   assertDeterministic,
   decOrNull,
@@ -2462,6 +2463,206 @@ describe('momentum.tick — regime filter', () => {
       }),
     );
     expect(shortBlocked.nextState.entryBlocker?.reason).toBe('against-regime');
+  });
+});
+
+describe('momentum.tick — ride mode', () => {
+  // Strictly monotonic closes give the vendored ADX its cleanest possible
+  // reading (one-directional movement only, so +DI/-DI dominance is total) —
+  // comfortably above any low threshold used below, with no need to hand-derive
+  // an exact number. 8 candles clears both regimeGate's period+k requirement
+  // and adx()'s `length >= period*2` floor at adxPeriod:3.
+  const STRONG_UP = ['10', '11', '12', '13', '14', '15', '16', '18'];
+  const STRONG_DOWN = ['18', '16', '15', '14', '13', '12', '11', '10'];
+  // Oscillating closes give ADX a real but weak reading — used with a
+  // threshold computed FROM this same series (via the real `adx()` the
+  // strategy itself calls) rather than a guessed number, so the "below
+  // threshold" case never depends on knowing Wilder's smoothing by hand.
+  const CHOPPY = ['10', '12', '10', '12', '10', '12', '10', '12'];
+
+  const rideCfg = (over: Record<string, unknown> = {}): MomentumConfig =>
+    cfg({
+      regimeFilter: { enabled: true, period: 3 },
+      rideMode: { enabled: true, adxPeriod: 3, adxThreshold: 10, retracePct: '0.20' },
+      ...over,
+    });
+
+  it('does not ride when rideMode is absent (default off), even with a strong confirmed trend', () => {
+    // Same fixture as the plain "exits on an EMA cross-down" test, plus a
+    // strong reference — rideMode defaulting off must change nothing.
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '6',
+        state: longState({ entryPrice: '6', highSinceEntry: '6', heldQuantity: '10' }),
+        config: cfg({ regimeFilter: { enabled: true, period: 3 } }),
+        reference: mkCandles(STRONG_UP),
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.exit', value: 1, tags: { reason: 'ema-cross' } },
+    ]);
+  });
+
+  it('suppresses the EMA cross-down exit while riding a confirmed strong trend', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '6', // no trail hit either way — isolates the cross suppression
+        state: longState({ entryPrice: '6', highSinceEntry: '6', heldQuantity: '10' }),
+        config: rideCfg(),
+        reference: mkCandles(STRONG_UP),
+      }),
+    );
+    expect(out.decisions).toEqual([{ type: 'noop' }]);
+    expect(out.metrics).toEqual([
+      { name: 'momentum.hold', value: 1, tags: { reason: 'ride-mode' } },
+    ]);
+  });
+
+  it('widens the trailing stop while riding, holding through a pullback that would otherwise trail-stop out', () => {
+    // Plain 5% stop would fire at 90 (see the base "exits on a trailing-stop
+    // retrace" test); the widened 20% stop only fires below 80.
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(FLAT_SERIES),
+        currentPrice: '90',
+        state: longState({ highSinceEntry: '100' }),
+        config: rideCfg(),
+        reference: mkCandles(STRONG_UP),
+      }),
+    );
+    expect(out.decisions).toEqual([{ type: 'noop' }]);
+  });
+
+  it('still exits once price falls far enough to breach the WIDENED trail', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(FLAT_SERIES),
+        currentPrice: '70', // below 100 * (1 - 0.20) = 80
+        state: longState({ highSinceEntry: '100' }),
+        config: rideCfg(),
+        reference: mkCandles(STRONG_UP),
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.exit', value: 1, tags: { reason: 'trailing-stop' } },
+    ]);
+  });
+
+  it('does not ride when regimeFilter itself is disabled, even with rideMode enabled and a strong trend', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '6',
+        state: longState({ entryPrice: '6', highSinceEntry: '6', heldQuantity: '10' }),
+        config: cfg({
+          rideMode: { enabled: true, adxPeriod: 3, adxThreshold: 10, retracePct: '0.20' },
+        }),
+        reference: mkCandles(STRONG_UP),
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.exit', value: 1, tags: { reason: 'ema-cross' } },
+    ]);
+  });
+
+  it('fails closed (does not ride) when the reference window is too short for ADX', () => {
+    // 4 candles clears regimeGate's period+k=3 floor but not adx()'s period*2=6.
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '6',
+        state: longState({ entryPrice: '6', highSinceEntry: '6', heldQuantity: '10' }),
+        config: rideCfg(),
+        reference: mkCandles(['10', '11', '12', '13']),
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.exit', value: 1, tags: { reason: 'ema-cross' } },
+    ]);
+  });
+
+  it('does not ride when ADX reads below the configured threshold', () => {
+    const choppyCandles = mkCandles(CHOPPY);
+    const measuredAdx = adx(choppyCandles, 3);
+    if (measuredAdx === null) throw new Error('test fixture: expected a measurable ADX');
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_DOWN),
+        currentPrice: '6',
+        state: longState({ entryPrice: '6', highSinceEntry: '6', heldQuantity: '10' }),
+        config: rideCfg({
+          rideMode: {
+            enabled: true,
+            adxPeriod: 3,
+            adxThreshold: measuredAdx.plus(1).toNumber(),
+            retracePct: '0.20',
+          },
+        }),
+        reference: choppyCandles,
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.exit', value: 1, tags: { reason: 'ema-cross' } },
+    ]);
+  });
+
+  it('forceSell always exits regardless of riding', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(['6', '6', '6', '6']),
+        currentPrice: '6',
+        state: longState({ entryPrice: '6', highSinceEntry: '6', heldQuantity: '10' }),
+        config: rideCfg(),
+        reference: mkCandles(STRONG_UP),
+        override: { kind: 'trigger-sell', overrideActionId: 'op-1' },
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.exit', value: 1, tags: { reason: 'operator-force-sell' } },
+    ]);
+  });
+
+  it('mirrors ride mode on the short side: suppresses the EMA cross-up (cover) while riding a strong downtrend', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_UP),
+        currentPrice: '14', // no trail (bounce) hit either way — isolates the cross suppression
+        state: {
+          ...flat(),
+          entryPrice: '14',
+          lowSinceEntry: '14',
+          heldQuantity: '10',
+        },
+        config: rideCfg({ direction: 'short' }),
+        reference: mkCandles(STRONG_DOWN),
+      }),
+    );
+    expect(out.decisions).toEqual([{ type: 'noop' }]);
+    expect(out.metrics).toEqual([
+      { name: 'momentum.hold', value: 1, tags: { reason: 'ride-mode', direction: 'short' } },
+    ]);
+  });
+
+  it('mirrors ride mode on the short side: default off leaves the cross-up exit unaffected', () => {
+    const out = momentum.tick(
+      mkInput({
+        closes: mkCandles(CROSS_UP),
+        currentPrice: '14',
+        state: {
+          ...flat(),
+          entryPrice: '14',
+          lowSinceEntry: '14',
+          heldQuantity: '10',
+        },
+        config: cfg({ direction: 'short', regimeFilter: { enabled: true, period: 3 } }),
+        reference: mkCandles(STRONG_DOWN),
+      }),
+    );
+    expect(out.metrics).toEqual([
+      { name: 'momentum.exit', value: 1, tags: { reason: 'ema-cross', direction: 'short' } },
+    ]);
   });
 });
 

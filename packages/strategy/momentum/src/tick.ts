@@ -1,5 +1,5 @@
 import { Decimal } from '@app/money';
-import { ema, sma } from '@app/indicators';
+import { adx, ema, sma } from '@app/indicators';
 import {
   clearPositionScopedFields,
   decOrNull,
@@ -26,6 +26,7 @@ import { computeEntryQuantity, computeExitQuantity } from './quantity.js';
 import { extensionMaxPercent, extensionPeriod } from './extension.js';
 import { trendMaType, trendPeriod } from './trend-filter.js';
 import { regimeMaType, regimePeriod } from './regime-filter.js';
+import { ridePeriod, rideThreshold } from './ride-mode.js';
 import { profitTrailEpoch, ratchetProfitHigh, resolveStopLevel } from './stop-level.js';
 import { resolveEntryBudget } from './sizing.js';
 import { entryClientOrderId, exitClientOrderId } from './client-order-id.js';
@@ -223,6 +224,31 @@ const regimeGate = (input: MomentumInput, side: 'long' | 'short'): RegimeGate =>
     if (line.gte(prevLine)) return 'against-regime';
   }
   return 'pass';
+};
+
+/**
+ * Ride mode: true only while `regimeFilter` confirms direction AND the
+ * reference market's own trend is strong (ADX >= threshold) — recomputed
+ * fresh every tick from config + the reference candle window, nothing
+ * persisted. Requires `regimeFilter` itself to be enabled: without it,
+ * {@link regimeGate} trivially returns `'pass'` for both sides, which would
+ * let ADX (a strength-only, direction-blind reading) drive riding on its
+ * own. Fails closed — same convention as `regimeGate` — when the reference
+ * window is too short for ADX (today: always true on a live tick, since the
+ * reference feed isn't wired up yet).
+ */
+const rideModeActive = (input: MomentumInput, side: 'long' | 'short'): boolean => {
+  const rm = input.config.rideMode;
+  if (rm?.enabled !== true) return false;
+  if (input.config.regimeFilter?.enabled !== true) return false;
+  if (regimeGate(input, side) !== 'pass') return false;
+  const reference = input.reference;
+  const referenceCandles = (reference?.candlesByInterval[input.config.candleInterval] ?? []).filter(
+    (c) => c.isClosed,
+  );
+  const strength = adx(referenceCandles, ridePeriod(rm.adxPeriod));
+  if (strength === null) return false;
+  return strength.gte(rideThreshold(rm.adxThreshold));
 };
 
 /**
@@ -510,6 +536,10 @@ const evaluateExit = (
   forceSell: boolean,
 ): MomentumOutput => {
   const { state, config, market, profile } = input;
+  // See rideModeActive's doc comment: recomputed fresh every tick, nothing
+  // persisted. While riding, the trail widens to rideMode.retracePct and the
+  // ordinary EMA cross-down is ignored below.
+  const riding = rideModeActive(input, 'long');
   // Ratchet the high-water mark on the CLOSED candle's close, never on the live
   // currentPrice — a transient intra-candle wick must not tighten the stop. The
   // entry price is the floor (highSinceEntry may be null after a fill-adopter
@@ -538,7 +568,14 @@ const evaluateExit = (
     market.candlesByInterval['1m'] ?? [],
     profitSinceMs,
   );
-  const level = resolveStopLevel(config, entry, effectiveHigh, profitHigh, candles, {
+  // Widen the hard-stop leg while riding by substituting rideMode's own,
+  // wider retrace fraction for trailingStopPct — resolveStopLevel reads
+  // config.trailingStopPct directly, so this is the whole change; the
+  // exchange-side resting stop (armed below from the SAME resolved level)
+  // stays consistent with the in-process check automatically.
+  const effectiveConfig: MomentumConfig =
+    riding && config.rideMode ? { ...config, trailingStopPct: config.rideMode.retracePct } : config;
+  const level = resolveStopLevel(effectiveConfig, entry, effectiveHigh, profitHigh, candles, {
     reference: market.currentPrice,
     band: market.symbolInfo.filters.percentPriceBySide,
   });
@@ -547,8 +584,13 @@ const evaluateExit = (
   // computable ATR, no armed profit leg — so hold, never sell. The resting stop
   // is cancelled by the arm below for the same reason.
   const trailHit = level.stop !== null && price.lte(level.stop);
+  // While riding, the ordinary EMA cross-down is ignored — the whole point of
+  // ride mode is to stop treating it as an exit signal for exactly this
+  // stretch. `trailHit` (now measured against the widened level above) and
+  // forceSell remain live regardless.
+  const rodeOffCross = riding && crossDown;
 
-  if (forceSell || trailHit || crossDown) {
+  if (forceSell || trailHit || (crossDown && !riding)) {
     if (state.heldQuantity === null) {
       // Long with no tracked quantity (entry price revived before the held-qty
       // reconciler ran). A trail / cross-down defers and self-heals: the signal
@@ -711,6 +753,7 @@ const evaluateExit = (
     // across strategies meaning nothing. "Is my stop clamped right now" is a state
     // question, answered by the blocker surfaces, not by a counter.
     metrics: [
+      ...(rodeOffCross ? [metric('momentum.hold', { reason: 'ride-mode' })] : []),
       ...(arm.blocker === null ? [] : [skipMetric('sell', arm.blocker.reason)]),
       ...(arm.decisions.length === 0
         ? []
@@ -900,16 +943,25 @@ const evaluateShortExit = (
   forceSell: boolean,
 ): MomentumOutput => {
   const { state, config, market, profile } = input;
+  const riding = rideModeActive(input, 'short');
   const prevLow = new Decimal(state.lowSinceEntry ?? entryPrice);
   const closedClose = new Decimal(lastCandle.close);
   const madeNewLow = closedClose.lt(prevLow);
   const effectiveLow = madeNewLow ? closedClose : prevLow;
-  const trailPct = new Decimal(config.trailingStopPct);
+  // Mirror of evaluateExit's widened-retrace substitution: use rideMode's own
+  // wider fraction while riding instead of trailingStopPct.
+  const trailPct = new Decimal(
+    riding && config.rideMode ? config.rideMode.retracePct : config.trailingStopPct,
+  );
   const stopLevel = effectiveLow.mul(new Decimal(1).plus(trailPct));
   const price = new Decimal(market.currentPrice);
   const trailHit = price.gte(stopLevel);
+  // Mirror of evaluateExit: while riding, the ordinary EMA cross-up (cover
+  // signal) is ignored — trailHit (against the widened level) and forceSell
+  // remain live regardless.
+  const rodeOffCross = riding && crossUp;
 
-  if (forceSell || trailHit || crossUp) {
+  if (forceSell || trailHit || (crossUp && !riding)) {
     if (state.heldQuantity === null) {
       const deferred = hold(
         state,
@@ -999,6 +1051,8 @@ const evaluateShortExit = (
     logs: [
       log('debug', 'momentum: holding short', { symbol: market.symbol, lowSinceEntry: newLow }),
     ],
-    metrics: [],
+    metrics: rodeOffCross
+      ? [metric('momentum.hold', { reason: 'ride-mode', direction: 'short' })]
+      : [],
   };
 };

@@ -205,6 +205,54 @@ const MomentumRegimeFilterSchema = z.object({
 });
 
 /**
+ * Ride mode: while `regimeFilter` confirms direction AND the reference
+ * market's own trend is STRONG (ADX above `adxThreshold`, not just "on the
+ * right side of the line"), a matching open position ignores the ordinary
+ * EMA-cross exit and trails at the wider `retracePct` instead of
+ * `trailingStopPct` — closer to buy-and-hold for exactly the stretch where
+ * the fast EMA cross tends to whipsaw a profitable position out early. The
+ * moment the regime or its strength breaks, normal exit behaviour resumes
+ * on the very next tick; nothing here is sticky/stateful.
+ *
+ * Depends on `regimeFilter` being enabled: without it, `regimeGate` trivially
+ * passes for both sides, which would let ADX — a strength-only, direction
+ * -blind reading — drive riding on its own. Backtest-only for now, for the
+ * same reason as `regimeFilter` (no live reference feed yet): fails closed
+ * on a live tick, so enabling this on a live profile has no effect until
+ * that plumbing lands, exactly like `regimeFilter` itself.
+ */
+const MomentumRideModeSchema = z.object({
+  enabled: z
+    .boolean()
+    .default(false)
+    .describe(
+      'While the reference market (BTC) confirms a strong, persistent trend (regimeFilter direction + ADX above threshold), hold a matching position through the ordinary EMA-cross exit at a wider trailing stop instead of flattening on it. Requires regimeFilter to also be enabled. Backtest-only for now — no effect on a LIVE profile yet.',
+    ),
+  adxPeriod: z
+    .number()
+    .int()
+    .min(2)
+    .max(100)
+    .default(14)
+    .describe(
+      'ADX lookback in candles, on the strategy candle interval, applied to the reference market. 14 is the Wilder-standard default.',
+    ),
+  adxThreshold: z
+    .number()
+    .min(10)
+    .max(100)
+    .default(40)
+    .describe(
+      'Minimum ADX reading on the reference market to count as "strongly trending". Wilder\'s convention: above 25 is trending, above 40 is strong, above 50 is very strong.',
+    ),
+  retracePct: decimalString('rideMode.retracePct must be in (0, 1)', { gt: 0, lt: 1 })
+    .default('0.20')
+    .describe(
+      '@ui:percent-of How far price may fall from its peak before the trailing-stop sells WHILE RIDING. Must be wider than trailingStopPct or ride mode has no effect. Must be above 0 and below 100.',
+    ),
+});
+
+/**
  * Entry overextension guard. The trend filter is a FLOOR (enter only above the
  * line); this is the CEILING (skip an entry while price sits too far above its
  * baseline). A lagging EMA cross confirms late on a fast mover, so by the time
@@ -499,6 +547,10 @@ export const MomentumConfigSchema = z.object({
   // duplicate. Off by default; backtest-only today (fails closed on live —
   // see the schema's own warning).
   regimeFilter: MomentumRegimeFilterSchema.optional(),
+  // Hold longer through a confirmed strong trend — layered on top of
+  // regimeFilter, not a replacement for it. Off by default; backtest-only
+  // today for the same reason regimeFilter is (see its own doc comment).
+  rideMode: MomentumRideModeSchema.optional(),
   // Entry overextension guard: a CEILING on how far above its baseline price may
   // sit at entry (the trend filter is the floor). Seeded on by the create-profile
   // default; an absent block reads as off in the unparsed worker config, so
