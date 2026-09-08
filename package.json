@@ -33,6 +33,7 @@
     "compose:build": "docker compose -f deploy/compose/docker-compose.yml build",
     "setup": "bun ./scripts/setup.ts",
     "seed:dev": "bun ./scripts/seed-dev-data.ts",
+    "verify:futures": "bun ./scripts/verify-futures-account.ts",
     "docs:screenshots": "bun ./scripts/docs/screenshots.ts",
     "docs:gen": "bun scripts/docs/gen-config-tables.ts",
     "env-contract": "bun scripts/gen-env-contract.ts",
@@ -58,6 +59,7 @@
   },
   "dependencies": {
     "@app/api": "workspace:*",
+    "@app/binance": "workspace:*",
     "@app/contracts": "workspace:*",
     "@app/core": "workspace:*",
     "@app/db": "workspace:*",

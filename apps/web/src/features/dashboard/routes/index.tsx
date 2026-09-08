@@ -14,7 +14,9 @@ import { API_KEY_DESTINATION } from '@/features/account/lib/api-key-destination'
 import { useDemoMode } from '@/features/auth/api/auth';
 import { aggregatePositionPnl, type QuotePnl } from '@/features/dashboard/lib/aggregate-pnl';
 import { dashboardAggregateQueryOptions } from '@/features/dashboard/api/dashboard';
+import { AccountPnlHeroCard } from '@/features/dashboard/components/account-pnl-hero-card';
 import { EquityPnlCard } from '@/features/dashboard/components/equity-pnl-card';
+import { PnlHeroCard } from '@/features/dashboard/components/pnl-hero-card';
 import { ProfileHealthStrip } from '@/features/dashboard/components/profile-health-strip';
 import { PositionsOrdersPanel } from '@/features/dashboard/components/positions-orders-panel';
 import { ScopedBalances } from '@/features/dashboard/components/scoped-balances';
@@ -25,6 +27,7 @@ import { TechnicalsHealthPill } from '@/features/technicals/components/technical
 import { InvestigateButton } from '@/features/profile/components/investigate-button';
 import { ProfileManageSheet } from '@/features/profile/components/profile-manage-sheet';
 import { ProfileStatus } from '@/features/profile/components/profile-status';
+import { RecentTradesCard } from '@/features/profile/components/recent-trades-card';
 import { useActiveAccountId } from '@/shared/lib/account-scope';
 import { visibleInDemo } from '@/shared/lib/demo-visibility';
 import { useScrollAnchor } from '@/shared/lib/use-scroll-anchor';
@@ -175,6 +178,19 @@ function OverviewPanel({
           scorecards. The loudest alert sits right under the header. */}
       {focusedProfileId !== null ? <ProfileHealthStrip profileId={focusedProfileId} /> : null}
 
+      {/* The headline "how am I doing" card — total P/L, today, and open —
+          right under the health line so it is the first number an operator
+          reads, above the market tape and the account band. Focused scope
+          reads one profile's own equity/closed-trades data directly; the
+          unfocused (Home) scope sums the same per-profile sources across
+          every profile, grouped by quote asset and live/practice so a
+          testnet number is never folded into a real-money total. */}
+      {focusedProfileId !== null ? (
+        <FocusedPnlHero rows={visible} profileId={focusedProfileId} />
+      ) : (
+        <AccountPnlHeroCard rows={visible} />
+      )}
+
       {/* Single full-width column: the account band and market tape stack rather
           than sharing a row. Both are @container-aware, so their inner grids open
           up to the full page width instead of folding for a half-width cell. */}
@@ -191,6 +207,13 @@ function OverviewPanel({
           nothing when both are empty, so it never adds a blank block. */}
       <PositionsOrdersPanel rows={visible} />
 
+      {/* Recap of what the bot actually did — the five most recent closed
+          trades. Scoped only: a per-account roll-up would mix profiles under
+          one recency ordering, which is not a question "what did THIS bot
+          just do" answers. Full history/filters/pagination live on the
+          dedicated History page, linked from the card's own header. */}
+      {focusedProfileId !== null ? <RecentTradesCard profileId={focusedProfileId} /> : null}
+
       {/* The flat symbol list is the operator's home base — every row is one
           click into that symbol. The profile roster drops below it only in
           account-overview scope; focused on one profile it would be a single
@@ -203,6 +226,25 @@ function OverviewPanel({
 
       {focusedProfileId === null ? <ProfilesPanel rows={visible} /> : null}
     </section>
+  );
+}
+
+/** Finds the focused profile's own row and hands its unrealised P/L + quote asset to {@link PnlHeroCard}. */
+function FocusedPnlHero({
+  rows,
+  profileId,
+}: {
+  rows: readonly DashboardAggregateRow[];
+  profileId: string;
+}) {
+  const row = rows.find((r) => r.profileId === profileId);
+  if (row === undefined) return null;
+  return (
+    <PnlHeroCard
+      profileId={profileId}
+      unrealised={aggregatePositionPnl(row.positions)}
+      quoteAsset={row.quoteAsset}
+    />
   );
 }
 

@@ -20,6 +20,7 @@ import {
 import { friendlyErrorLabel } from '@/features/technicals/lib/friendly-error-label';
 import { Skeleton } from '@/shared/components/ui/skeleton';
 import { humaniseAge } from '@/shared/lib/format-time';
+import { t } from '@/shared/lib/i18n';
 import type { TechnicalsFetchStatus } from '@app/contracts';
 
 /**
@@ -83,7 +84,7 @@ export function TechnicalsHealthPill({
     // name has to be real text held off-screen.
     return (
       <span className="inline-block min-w-[85px] align-middle" data-testid={testId}>
-        <span className="sr-only">Technicals compute health loading</span>
+        <span className="sr-only">{t('technicals.loading')}</span>
         <Skeleton className="h-3 w-full" />
       </span>
     );
@@ -94,11 +95,11 @@ export function TechnicalsHealthPill({
     return (
       <span
         className="text-xs text-warning"
-        title={`Health unavailable: ${errMsg}`}
-        aria-label={`Technicals compute health unavailable: ${reason}`}
+        title={t('technicals.unavailable_title', { errMsg })}
+        aria-label={t('technicals.unavailable_aria', { reason })}
         data-testid={testId}
       >
-        ● technicals (health unavailable: {reason})
+        ● {t('technicals.unavailable_label', { reason })}
       </span>
     );
   }
@@ -107,11 +108,11 @@ export function TechnicalsHealthPill({
     return (
       <span
         className="text-xs text-warning"
-        title="No recent compute batch — the cron may not be running."
-        aria-label="Technicals compute silent — no recent batch; the cron may not be running"
+        title={t('technicals.silent_title')}
+        aria-label={t('technicals.silent_aria')}
         data-testid={testId}
       >
-        ● technicals silent
+        ● {t('technicals.silent_label')}
       </span>
     );
   }
@@ -122,19 +123,19 @@ export function TechnicalsHealthPill({
   // Single word for the aria-label so it doesn't read "Technicals technicals
   // outage" — the aria text already starts with "Technicals", duplicating it
   // in `label` was a screen-reader copy bug.
-  let healthWord: 'healthy' | 'degraded' | 'outage';
+  let healthWord: string;
   if (allErrored) {
     tone = 'text-danger';
-    label = 'technicals outage';
-    healthWord = 'outage';
+    label = t('technicals.outage');
+    healthWord = t('technicals.word_outage');
   } else if (anyDegraded) {
     tone = 'text-warning';
-    label = 'technicals degraded';
-    healthWord = 'degraded';
+    label = t('technicals.degraded');
+    healthWord = t('technicals.word_degraded');
   } else {
     tone = 'text-success';
-    label = 'technicals';
-    healthWord = 'healthy';
+    label = t('technicals.healthy');
+    healthWord = t('technicals.word_healthy');
   }
   const nowMs = clock();
   const newestMs = Math.max(...intervals.map((i) => i.fetchedAtMs));
@@ -152,15 +153,23 @@ export function TechnicalsHealthPill({
   const isDegradedTier = allErrored || anyDegraded;
   const freshes = intervals.map((i) => i.lastFreshAtMs).filter((m): m is number => m !== null);
   const oldestFreshMs = freshes.length > 0 ? Math.min(...freshes) : null;
-  let freshSuffix = '';
+  // The core phrase without its leading separator, so the label (` · `) and
+  // the aria sentence (`; `) can each punctuate it their own way without
+  // duplicating the translated text.
+  let freshCore = '';
   if (isDegradedTier) {
     if (oldestFreshMs !== null) {
-      freshSuffix = ` · fresh ${humaniseAge(nowMs - oldestFreshMs)} ago`;
+      freshCore = t('technicals.fresh_ago', { age: humaniseAge(nowMs - oldestFreshMs) });
     } else if (allErrored) {
-      freshSuffix = ' · never fresh';
+      freshCore = t('technicals.never_fresh');
     }
   }
-  const ariaLabel = `Technicals ${healthWord}; last fetch ${ageLabel} ago${freshSuffix.replace(' · ', '; ')}`;
+  const freshSuffix = freshCore === '' ? '' : ` · ${freshCore}`;
+  const ariaLabel = t('technicals.aria', {
+    word: healthWord,
+    ageLabel,
+    freshSuffix: freshCore === '' ? '' : `; ${freshCore}`,
+  });
 
   return (
     <span
@@ -174,7 +183,8 @@ export function TechnicalsHealthPill({
       aria-label={ariaLabel}
       data-testid={testId}
     >
-      ● {label} {ageLabel} ago{freshSuffix}
+      ● {label} {t('technicals.age_suffix', { ageLabel })}
+      {freshSuffix}
     </span>
   );
 }

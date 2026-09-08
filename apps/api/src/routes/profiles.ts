@@ -77,6 +77,7 @@ const toResponse = (
   // Account-level: the API supplies it from the profile's parent account.
   binanceMode,
   quoteAsset: row.quoteAsset,
+  leverage: row.leverage ?? null,
   benchmarkMode: BenchmarkMode.catch('btc').parse(row.benchmarkMode),
   baselineBacktestRunId: row.baselineBacktestRunId ?? null,
   // null column → the contract defaults; a stored partial fills the rest.
@@ -310,6 +311,7 @@ export const profilesRouter = (di: DI): ApiHono => {
       config,
       state,
       enabled: false,
+      ...(body.leverage !== undefined ? { leverage: body.leverage } : {}),
     });
     c.set('auditEvent', { event: 'add-profile', payload: { profileId: row.id } });
     return c.json(toResponse(row, account.binanceMode as 'test' | 'live'), 201);
@@ -373,6 +375,7 @@ export const profilesRouter = (di: DI): ApiHono => {
     // Uppercase so the stored quote matches the symbol suffix discovery and the
     // order/valuation paths compare against (Binance pairs are upper-case).
     if (body.quoteAsset !== undefined) patch.quoteAsset = body.quoteAsset.toUpperCase();
+    if (body.leverage !== undefined) patch.leverage = body.leverage;
     if (body.benchmarkMode !== undefined) patch.benchmarkMode = body.benchmarkMode;
     if (body.baselineBacktestRunId !== undefined) {
       if (body.baselineBacktestRunId === null) {

@@ -11,6 +11,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/shared/components/ui/sheet';
+import { t } from '@/shared/lib/i18n';
 
 /** Which drawer is on screen. Never two — see the note on the state below. */
 type ManageView = 'closed' | 'manage' | 'investigate';
@@ -42,7 +43,7 @@ export function ProfileManageSheet({
           className="gap-2"
         >
           <Settings2 className="h-4 w-4" aria-hidden />
-          Manage profile
+          {t('manage.button')}
         </Button>
         <SheetContent
           side="right"
@@ -50,8 +51,8 @@ export function ProfileManageSheet({
           data-testid="manage-sheet"
         >
           <SheetHeader>
-            <SheetTitle>Manage profile</SheetTitle>
-            <SheetDescription>Run a diagnosis or reconcile fees for this profile.</SheetDescription>
+            <SheetTitle>{t('manage.title')}</SheetTitle>
+            <SheetDescription>{t('manage.description')}</SheetDescription>
           </SheetHeader>
           <div className="mt-4">
             <ProfileManageCard profileId={profileId} onInvestigate={() => setView('investigate')} />

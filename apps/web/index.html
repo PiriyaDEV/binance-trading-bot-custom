@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="th" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
@@ -10,6 +10,9 @@
     <!-- External (not inline) so the strict CSP `script-src 'self'` allows it;
          runs before paint to avoid a theme flash. See public/theme-init.js. -->
     <script src="/theme-init.js"></script>
+    <!-- Same reasoning as theme-init.js, for the locale instead of the theme.
+         See public/locale-init.js. -->
+    <script src="/locale-init.js"></script>
     <!-- Boot placeholder styling. Inline and literal, not theme tokens: the
          token stylesheet is pulled in by the app bundle and is not applied yet
          at first paint, which is the only moment this markup is on screen.

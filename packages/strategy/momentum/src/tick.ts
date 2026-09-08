@@ -1,5 +1,5 @@
 import { Decimal } from '@app/money';
-import { ema, sma } from '@app/indicators';
+import { adx, ema, sma } from '@app/indicators';
 import {
   clearPositionScopedFields,
   decOrNull,
@@ -25,6 +25,8 @@ import {
 import { computeEntryQuantity, computeExitQuantity } from './quantity.js';
 import { extensionMaxPercent, extensionPeriod } from './extension.js';
 import { trendMaType, trendPeriod } from './trend-filter.js';
+import { regimeMaType, regimePeriod } from './regime-filter.js';
+import { ridePeriod, rideThreshold } from './ride-mode.js';
 import { profitTrailEpoch, ratchetProfitHigh, resolveStopLevel } from './stop-level.js';
 import { resolveEntryBudget } from './sizing.js';
 import { entryClientOrderId, exitClientOrderId } from './client-order-id.js';
@@ -80,32 +82,50 @@ const entryMargin = (config: MomentumConfig): Decimal => {
 
 /**
  * Macro trend gate result. `pass` allows the entry. The block reasons are kept
- * distinct for observability: `below-trend` is a genuine sit-out (price under
- * the line); `falling-trend` is the slope veto (price is above the line but the
- * line is not rising, the bear-rally signature); `insufficient-history` is
- * fail-closed (the window is too short to compute the line, or its slope) — a
- * misconfiguration tell, e.g. a 200-period filter on a profile that has not
- * loaded 200 candles, which must not look like a normal downtrend on the metric.
+ * distinct for observability, and mirrored per side: on the long side,
+ * `below-trend` is a genuine sit-out (price under the line) and `falling-trend`
+ * is the slope veto (price is above the line but the line is not rising, the
+ * bear-rally signature); on the short side, `above-trend` and `rising-trend` are
+ * the exact mirrors (price over the line; price under the line but the line is
+ * not falling, the bull-pullback signature). `insufficient-history` is
+ * fail-closed on either side (the window is too short to compute the line, or
+ * its slope) — a misconfiguration tell, e.g. a 200-period filter on a profile
+ * that has not loaded 200 candles, which must not look like a normal
+ * against-the-trend sit-out on the metric.
  */
-type TrendGate = 'pass' | 'below-trend' | 'falling-trend' | 'insufficient-history';
+type TrendGate =
+  | 'pass'
+  | 'below-trend'
+  | 'falling-trend'
+  | 'above-trend'
+  | 'rising-trend'
+  | 'insufficient-history';
 
 const trendLine = (maType: 'sma' | 'ema', candles: readonly Candle[], period: number): Decimal =>
   maType === 'ema' ? ema(candles, period) : sma(candles, period);
 
 /**
- * Macro trend gate: an entry is allowed only while price trades above the
+ * Macro trend gate: a LONG entry is allowed only while price trades above the
  * configured long-term MA, and (when `requireRising`) only while that MA is
- * itself rising over the last `slopeLookbackBars`. Price-above-line alone cannot
- * separate an early bull from a bear rally; the slope veto rejects a pop above a
- * still-falling line. Disabled or absent => `pass`. Fail-closed: too little
- * history to compute the line, or to read it `slopeLookbackBars` candles back,
- * returns `insufficient-history` (suppress rather than guess). Exit logic does
- * not consult this — an open long is still managed by the trailing stop.
+ * itself rising over the last `slopeLookbackBars`; a SHORT entry is the exact
+ * mirror — allowed only below the line, and (when `requireRising`) only while
+ * the line is FALLING. Price-vs-line alone cannot separate an early reversal
+ * from a same-direction pullback; the slope veto rejects a long pop above a
+ * still-falling line, or a short dip below a still-rising one — the whipsaw
+ * pattern that made an ungated `direction: 'both'` lose badly in a trending
+ * market (a strong uptrend keeps firing short entries the EMA cross alone can't
+ * tell from a real top). One config block, symmetric by construction, so
+ * `trendFilter.enabled` protects whichever leg would trade against the trend.
+ * Disabled or absent => `pass`. Fail-closed: too little history to compute the
+ * line, or to read it `slopeLookbackBars` candles back, returns
+ * `insufficient-history` (suppress rather than guess). Exit logic does not
+ * consult this — an open position is still managed by its own trailing stop.
  */
 const trendGate = (
   config: MomentumConfig,
   candles: readonly Candle[],
   currentPrice: string,
+  side: 'long' | 'short',
 ): TrendGate => {
   const tf = config.trendFilter;
   if (tf?.enabled !== true) return 'pass';
@@ -124,12 +144,111 @@ const trendGate = (
   const maType = trendMaType(tf.maType);
   if (candles.length < period + k) return 'insufficient-history';
   const line = trendLine(maType, candles, period);
-  if (new Decimal(currentPrice).lte(line)) return 'below-trend';
+  const price = new Decimal(currentPrice);
+  if (side === 'long') {
+    if (price.lte(line)) return 'below-trend';
+    if (rising) {
+      const prevLine = trendLine(maType, candles.slice(0, candles.length - k), period);
+      if (line.lte(prevLine)) return 'falling-trend';
+    }
+    return 'pass';
+  }
+  if (price.gte(line)) return 'above-trend';
   if (rising) {
     const prevLine = trendLine(maType, candles.slice(0, candles.length - k), period);
-    if (line.lte(prevLine)) return 'falling-trend';
+    if (line.gte(prevLine)) return 'rising-trend';
   }
   return 'pass';
+};
+
+/**
+ * Market-wide regime gate result. `pass` allows the entry; `against-regime`
+ * is a genuine sit-out (the reference market is on the wrong side of its own
+ * line for this side); `regime-insufficient-history` is fail-closed — either
+ * the reference window is too short, or (the live-today case)
+ * `TickInput.reference` is absent entirely because the live worker does not
+ * yet stream it. One reason pair covers both directions (unlike
+ * `TrendGate`'s four): a single external bias just blocks whichever side
+ * disagrees with it.
+ */
+type RegimeGate = 'pass' | 'against-regime' | 'regime-insufficient-history';
+
+/**
+ * Market-wide regime gate: the portfolio-level counterpart to {@link trendGate}.
+ * Compares the REFERENCE market's OWN price to the REFERENCE market's OWN
+ * trend line (e.g. "is BTC above its 50-day line") — never the ticked
+ * symbol's price, which is irrelevant here. Reads `input.reference` (a FIXED
+ * symbol — see `Strategy.capabilities.referenceSymbol`, BTC for momentum),
+ * so the same bias applies to every symbol's entries at once. Disabled or
+ * absent => `pass`. Fails closed — `regime-insufficient-history` — when
+ * `reference` is missing altogether (today: always true on a live tick,
+ * since that plumbing isn't wired yet) or its window is too short, exactly
+ * like {@link trendGate}'s own fail-closed convention, so a misconfigured or
+ * not-yet-live-wired gate reads as "suppressing everything," never as
+ * "silently permissive."
+ */
+const regimeGate = (input: MomentumInput, side: 'long' | 'short'): RegimeGate => {
+  const rf = input.config.regimeFilter;
+  if (rf?.enabled !== true) return 'pass';
+  const reference = input.reference;
+  const referenceCandles = (reference?.candlesByInterval[input.config.candleInterval] ?? []).filter(
+    (c) => c.isClosed,
+  );
+  const rising = rf.requireRising === true;
+  const rawK = Number(rf.slopeLookbackBars ?? 10);
+  const k = rising ? (Number.isFinite(rawK) && rawK >= 1 ? rawK : 1) : 0;
+  const period = regimePeriod(rf.period);
+  const maType = regimeMaType(rf.maType);
+  if (!reference || referenceCandles.length < period + k) return 'regime-insufficient-history';
+  const line = trendLine(maType, referenceCandles, period);
+  const price = new Decimal(reference.currentPrice);
+  if (side === 'long') {
+    if (price.lte(line)) return 'against-regime';
+    if (rising) {
+      const prevLine = trendLine(
+        maType,
+        referenceCandles.slice(0, referenceCandles.length - k),
+        period,
+      );
+      if (line.lte(prevLine)) return 'against-regime';
+    }
+    return 'pass';
+  }
+  if (price.gte(line)) return 'against-regime';
+  if (rising) {
+    const prevLine = trendLine(
+      maType,
+      referenceCandles.slice(0, referenceCandles.length - k),
+      period,
+    );
+    if (line.gte(prevLine)) return 'against-regime';
+  }
+  return 'pass';
+};
+
+/**
+ * Ride mode: true only while `regimeFilter` confirms direction AND the
+ * reference market's own trend is strong (ADX >= threshold) — recomputed
+ * fresh every tick from config + the reference candle window, nothing
+ * persisted. Requires `regimeFilter` itself to be enabled: without it,
+ * {@link regimeGate} trivially returns `'pass'` for both sides, which would
+ * let ADX (a strength-only, direction-blind reading) drive riding on its
+ * own. Fails closed — same convention as `regimeGate` — when the reference
+ * window is too short for ADX (today: always true on a live tick, since the
+ * reference feed isn't wired up yet).
+ */
+const rideModeActive = (input: MomentumInput, side: 'long' | 'short'): boolean => {
+  const rm = input.config.rideMode;
+  if (rm?.enabled !== true) return false;
+  if (input.config.regimeFilter?.enabled !== true) return false;
+  if (regimeGate(input, side) !== 'pass') return false;
+  const reference = input.reference;
+  const referenceCandles = (reference?.candlesByInterval[input.config.candleInterval] ?? []).filter(
+    (c) => c.isClosed,
+  );
+  const strength = adx(referenceCandles, ridePeriod(rm.adxPeriod));
+  if (strength === null) return false;
+  return strength.gte(rideThreshold(rm.adxThreshold));
 };
 
 /**
@@ -228,6 +347,29 @@ export const computeTick = (input: MomentumInput): MomentumOutput => {
   const crossUp = fastPrev.lte(slowPrev.mul(band)) && fastNow.gt(slowNow.mul(band));
   const crossDown = fastPrev.gte(slowPrev) && fastNow.lt(slowNow);
 
+  if (config.direction === 'short') {
+    return state.entryPrice === null
+      ? shortEntryWithTrendGate(scoped, crossDown, candles, lastCandle.closeTimeMs)
+      : evaluateShortExit(scoped, state.entryPrice, crossUp, lastCandle, forceSell);
+  }
+
+  // 'both': flat opens whichever side crosses (long on cross-up, short on
+  // cross-down — mutually exclusive by construction, so never both at once);
+  // held dispatches by which side is actually open. `lowSinceEntry !== null`
+  // is the short tell: `evaluateShortEntry` is the only path that ever sets
+  // it (to a non-null price), and every full exit clears it back to null
+  // alongside `entryPrice` — so it doubles as a direction flag without a new
+  // state field. A short entry is gated by the same macro trend filter as a
+  // long entry (see `shortEntryWithTrendGate`) — the extension guard/ATR
+  // trail/profit trail/protective stop remain long-only for now (same scope
+  // limit as `direction: 'short'` — see the config's own doc comment).
+  if (config.direction === 'both' && state.entryPrice === null && crossDown) {
+    return shortEntryWithTrendGate(scoped, crossDown, candles, lastCandle.closeTimeMs);
+  }
+  if (config.direction === 'both' && state.entryPrice !== null && state.lowSinceEntry !== null) {
+    return evaluateShortExit(scoped, state.entryPrice, crossUp, lastCandle, forceSell);
+  }
+
   if (state.entryPrice === null) {
     if (crossUp) {
       // One entry per cross. `crossUp` reads the last two CLOSED candles, so it
@@ -248,11 +390,28 @@ export const computeTick = (input: MomentumInput): MomentumOutput => {
           { reason: 'already-entered-this-candle' },
         );
       }
+      // Market-wide regime gate first (macro-of-macro): suppress a fresh long
+      // unless the REFERENCE market (BTC) is itself above its own long-term
+      // line, independent of and evaluated before the per-symbol trend gate.
+      const regime = regimeGate(scoped, 'long');
+      if (regime !== 'pass') {
+        return hold(
+          state,
+          [
+            log('debug', 'momentum: entry suppressed by regime filter', {
+              symbol: market.symbol,
+              gate: regime,
+            }),
+          ],
+          [skipMetric('entry', regime)],
+          { reason: regime },
+        );
+      }
       // Macro trend gate: suppress a fresh long unless price is above the long-term
       // trend line, so the strategy sits out confirmed downtrends instead of buying
       // false cross-ups on bear rallies. The skip reason distinguishes a genuine
       // below-trend sit-out from a too-short window (a misconfiguration tell).
-      const gate = trendGate(config, candles, market.currentPrice);
+      const gate = trendGate(config, candles, market.currentPrice, 'long');
       if (gate !== 'pass') {
         return hold(
           state,
@@ -335,6 +494,8 @@ const evaluateEntry = (
     schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
     entryPrice: market.currentPrice,
     highSinceEntry: market.currentPrice,
+    // A long position never uses the short-side trailing mark.
+    lowSinceEntry: null,
     // Seeded on the first held tick from the 1m window, not here: at entry the
     // profit trail is definitionally unarmed, and seeding it to the entry price
     // would be indistinguishable from "no 1m candle has closed yet".
@@ -375,6 +536,10 @@ const evaluateExit = (
   forceSell: boolean,
 ): MomentumOutput => {
   const { state, config, market, profile } = input;
+  // See rideModeActive's doc comment: recomputed fresh every tick, nothing
+  // persisted. While riding, the trail widens to rideMode.retracePct and the
+  // ordinary EMA cross-down is ignored below.
+  const riding = rideModeActive(input, 'long');
   // Ratchet the high-water mark on the CLOSED candle's close, never on the live
   // currentPrice — a transient intra-candle wick must not tighten the stop. The
   // entry price is the floor (highSinceEntry may be null after a fill-adopter
@@ -403,7 +568,14 @@ const evaluateExit = (
     market.candlesByInterval['1m'] ?? [],
     profitSinceMs,
   );
-  const level = resolveStopLevel(config, entry, effectiveHigh, profitHigh, candles, {
+  // Widen the hard-stop leg while riding by substituting rideMode's own,
+  // wider retrace fraction for trailingStopPct — resolveStopLevel reads
+  // config.trailingStopPct directly, so this is the whole change; the
+  // exchange-side resting stop (armed below from the SAME resolved level)
+  // stays consistent with the in-process check automatically.
+  const effectiveConfig: MomentumConfig =
+    riding && config.rideMode ? { ...config, trailingStopPct: config.rideMode.retracePct } : config;
+  const level = resolveStopLevel(effectiveConfig, entry, effectiveHigh, profitHigh, candles, {
     reference: market.currentPrice,
     band: market.symbolInfo.filters.percentPriceBySide,
   });
@@ -412,8 +584,13 @@ const evaluateExit = (
   // computable ATR, no armed profit leg — so hold, never sell. The resting stop
   // is cancelled by the arm below for the same reason.
   const trailHit = level.stop !== null && price.lte(level.stop);
+  // While riding, the ordinary EMA cross-down is ignored — the whole point of
+  // ride mode is to stop treating it as an exit signal for exactly this
+  // stretch. `trailHit` (now measured against the widened level above) and
+  // forceSell remain live regardless.
+  const rodeOffCross = riding && crossDown;
 
-  if (forceSell || trailHit || crossDown) {
+  if (forceSell || trailHit || (crossDown && !riding)) {
     if (state.heldQuantity === null) {
       // Long with no tracked quantity (entry price revived before the held-qty
       // reconciler ran). A trail / cross-down defers and self-heals: the signal
@@ -484,6 +661,7 @@ const evaluateExit = (
       schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
       entryPrice: null,
       highSinceEntry: null,
+      lowSinceEntry: null,
       profitHigh: null,
       heldQuantity: null,
       lastEntryCandleMs: lastEntryCandle(state),
@@ -575,6 +753,7 @@ const evaluateExit = (
     // across strategies meaning nothing. "Is my stop clamped right now" is a state
     // question, answered by the blocker surfaces, not by a counter.
     metrics: [
+      ...(rodeOffCross ? [metric('momentum.hold', { reason: 'ride-mode' })] : []),
       ...(arm.blocker === null ? [] : [skipMetric('sell', arm.blocker.reason)]),
       ...(arm.decisions.length === 0
         ? []
@@ -584,5 +763,296 @@ const evaluateExit = (
             nativeTrailed: arm.nativeTrailed,
           })),
     ],
+  };
+};
+
+/**
+ * Gate + dispatch for a short entry: runs the market-wide regime gate (side:
+ * `'short'`), then the macro trend filter (side: `'short'`), before handing
+ * off to {@link evaluateShortEntry} — the mirror of how a long entry is gated
+ * inline in `computeTick` before `evaluateEntry`. Kept as a separate function
+ * (rather than inlined at both call sites — pure `direction: 'short'` and
+ * `'both'`) since the gate-then-dispatch shape is identical at both. Does NOT
+ * run the extension guard — that stays long-only (see
+ * `MomentumConfigSchema.direction`'s doc comment). Note: unlike the long
+ * path, `evaluateShortEntry` runs its own "already-entered-this-candle" check
+ * internally rather than that check living here first, so on a short entry
+ * both gates are evaluated before the already-entered guard (the long path
+ * checks the opposite order) — this only affects which reason a same-tick
+ * double-suppression logs, not behavior.
+ */
+const shortEntryWithTrendGate = (
+  input: MomentumInput,
+  crossDown: boolean,
+  candles: readonly Candle[],
+  candleCloseMs: number,
+): MomentumOutput => {
+  const { state, config, market } = input;
+  if (crossDown) {
+    const regime = regimeGate(input, 'short');
+    if (regime !== 'pass') {
+      return hold(
+        state,
+        [
+          log('debug', 'momentum: short entry suppressed by regime filter', {
+            symbol: market.symbol,
+            gate: regime,
+          }),
+        ],
+        [skipMetric('entry', regime)],
+        { reason: regime },
+      );
+    }
+    const gate = trendGate(config, candles, market.currentPrice, 'short');
+    if (gate !== 'pass') {
+      return hold(
+        state,
+        [
+          log('debug', 'momentum: short entry suppressed by trend filter', {
+            symbol: market.symbol,
+            gate,
+          }),
+        ],
+        [skipMetric('entry', gate)],
+        { reason: gate },
+      );
+    }
+  }
+  return evaluateShortEntry(input, crossDown, candleCloseMs);
+};
+
+/**
+ * Short entry: mirrors {@link evaluateEntry} for the opposite side — a
+ * `SELL` with `positionSide: 'SHORT'` opens the position instead of a plain
+ * `BUY`. The macro trend filter is applied by {@link shortEntryWithTrendGate}
+ * before this runs; the extension guard remains long-only for this first
+ * short-capable pass (see `MomentumConfigSchema.direction`'s doc comment).
+ */
+const evaluateShortEntry = (
+  input: MomentumInput,
+  crossDown: boolean,
+  candleCloseMs: number,
+): MomentumOutput => {
+  const { state, config, market, profile, account } = input;
+  if (!crossDown) {
+    return hold(state, [
+      log('debug', 'momentum: flat (short), no entry signal', { symbol: market.symbol }),
+    ]);
+  }
+  if (lastEntryCandle(state) === candleCloseMs) {
+    return hold(
+      state,
+      [
+        log('debug', 'momentum: short entry suppressed, already entered on this candle', {
+          symbol: market.symbol,
+          candleCloseMs,
+        }),
+      ],
+      [skipMetric('entry', 'already-entered-this-candle')],
+      { reason: 'already-entered-this-candle' },
+    );
+  }
+  const budget = resolveEntryBudget(config, account, market.symbolInfo.quoteAsset);
+  if ('skip' in budget) {
+    return hold(
+      state,
+      [
+        log('warn', 'momentum: short entry skipped', {
+          reason: budget.skip,
+          symbol: market.symbol,
+        }),
+      ],
+      [skipMetric('entry', budget.skip)],
+      { reason: budget.skip },
+    );
+  }
+  // Same sizing math as a long entry (budget / price): opening a short of
+  // this notional, not a leveraged one — the app's fixed low-leverage policy
+  // is enforced where the order actually reaches the exchange, not here.
+  const sized = computeEntryQuantity(budget.budget, market.currentPrice, market.symbolInfo.filters);
+  if ('skip' in sized) {
+    return hold(
+      state,
+      [log('warn', 'momentum: short entry skipped', { reason: sized.skip, symbol: market.symbol })],
+      [skipMetric('entry', sized.skip)],
+      { reason: sized.skip },
+    );
+  }
+  const decision: Decision = {
+    type: 'place-order',
+    intent: {
+      symbol: market.symbol,
+      side: 'SELL',
+      positionSide: 'SHORT',
+      reason: 'entry',
+      clientOrderId: entryClientOrderId(profile.id, market.symbol, candleCloseMs),
+    },
+    params: { type: 'MARKET', quantity: sized.quantity },
+  };
+  const nextState: MomentumState = {
+    schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
+    entryPrice: market.currentPrice,
+    highSinceEntry: null,
+    lowSinceEntry: market.currentPrice,
+    profitHigh: null,
+    // NOT `sized.quantity`: the order just placed is still RESTING (the fill
+    // model never fills on the placement candle), so the real held quantity
+    // is unknown until the executor's fill adoption sets it from the actual
+    // landed fill next tick — same value, but adopted exactly once. Setting
+    // it here too would double it the moment adoption runs (`resolveFill`
+    // accumulates fill.quantity ONTO whatever `heldQuantity` already reads),
+    // and unlike a long exit, a short's COVER (a BUY) is never capped by a
+    // held-base check the way a long's SELL is, so an inflated quantity here
+    // sails straight through to the cover order instead of being silently
+    // clamped back down. `null` is exactly the "not yet confirmed" state the
+    // exit path below already defers on, so this costs one held tick, not a
+    // wrong position.
+    heldQuantity: null,
+    lastEntryCandleMs: candleCloseMs,
+    profitTrailSinceMs: null,
+    entryBlocker: null,
+    protectiveStopBlocker: null,
+  };
+  return {
+    nextState,
+    decisions: [decision],
+    logs: [
+      log('info', 'momentum: short entry on EMA cross-down', {
+        symbol: market.symbol,
+        price: market.currentPrice,
+        quantity: sized.quantity,
+      }),
+    ],
+    metrics: [metric('momentum.entry', { direction: 'short' })],
+  };
+};
+
+/**
+ * Short exit (a cover): mirrors {@link evaluateExit} for the opposite side.
+ * `lowSinceEntry` ratchets DOWN on new closed-candle lows (the mirror of
+ * `highSinceEntry`'s ratchet up); the trailing stop fires when live price
+ * BOUNCES back up `trailingStopPct` from that low, the mirror of a long's
+ * retrace down from its high. No ATR trail, profit trail, or protective
+ * stop for a short in this first pass — see `direction`'s doc comment.
+ */
+const evaluateShortExit = (
+  input: MomentumInput,
+  entryPrice: string,
+  crossUp: boolean,
+  lastCandle: Candle,
+  forceSell: boolean,
+): MomentumOutput => {
+  const { state, config, market, profile } = input;
+  const riding = rideModeActive(input, 'short');
+  const prevLow = new Decimal(state.lowSinceEntry ?? entryPrice);
+  const closedClose = new Decimal(lastCandle.close);
+  const madeNewLow = closedClose.lt(prevLow);
+  const effectiveLow = madeNewLow ? closedClose : prevLow;
+  // Mirror of evaluateExit's widened-retrace substitution: use rideMode's own
+  // wider fraction while riding instead of trailingStopPct.
+  const trailPct = new Decimal(
+    riding && config.rideMode ? config.rideMode.retracePct : config.trailingStopPct,
+  );
+  const stopLevel = effectiveLow.mul(new Decimal(1).plus(trailPct));
+  const price = new Decimal(market.currentPrice);
+  const trailHit = price.gte(stopLevel);
+  // Mirror of evaluateExit: while riding, the ordinary EMA cross-up (cover
+  // signal) is ignored — trailHit (against the widened level) and forceSell
+  // remain live regardless.
+  const rodeOffCross = riding && crossUp;
+
+  if (forceSell || trailHit || (crossUp && !riding)) {
+    if (state.heldQuantity === null) {
+      const deferred = hold(
+        state,
+        [
+          log(
+            'warn',
+            forceSell
+              ? 'momentum: operator force-cover could not execute — no tracked quantity yet'
+              : 'momentum: short exit signal but no held quantity',
+            { symbol: market.symbol },
+          ),
+        ],
+        [skipMetric('exit', forceSell ? 'force-sell-no-held' : 'no-held')],
+      );
+      return forceSell
+        ? { ...deferred, overrideDeferred: true, overrideDeclineReason: 'force-sell-no-held' }
+        : deferred;
+    }
+    const sized = computeExitQuantity(
+      state.heldQuantity,
+      market.currentPrice,
+      market.symbolInfo.filters,
+    );
+    if ('skip' in sized) {
+      const skipped = hold(
+        state,
+        [
+          log('warn', 'momentum: short cover skipped', {
+            reason: sized.skip,
+            symbol: market.symbol,
+          }),
+        ],
+        [skipMetric('exit', sized.skip)],
+      );
+      return forceSell ? { ...skipped, overrideDeclineReason: sized.skip } : skipped;
+    }
+    const reason = forceSell ? 'operator-force-sell' : trailHit ? 'trailing-stop' : 'ema-cross';
+    const overrideActionId = forceSell ? input.bundle.override?.overrideActionId : undefined;
+    const cover: Decision = {
+      type: 'place-order',
+      intent: {
+        symbol: market.symbol,
+        side: 'BUY',
+        positionSide: 'SHORT',
+        reason: 'exit',
+        clientOrderId: exitClientOrderId(profile.id, market.symbol, lastCandle.closeTimeMs),
+        ...(overrideActionId === undefined ? {} : { overrideActionId }),
+      },
+      params: { type: 'MARKET', quantity: sized.quantity },
+    };
+    const nextState: MomentumState = {
+      schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
+      entryPrice: null,
+      highSinceEntry: null,
+      lowSinceEntry: null,
+      profitHigh: null,
+      heldQuantity: null,
+      lastEntryCandleMs: lastEntryCandle(state),
+      profitTrailSinceMs: null,
+      entryBlocker: null,
+      protectiveStopBlocker: null,
+    };
+    return {
+      nextState,
+      decisions: [cover],
+      logs: [
+        log('info', 'momentum: short exit (cover)', {
+          symbol: market.symbol,
+          reason,
+          price: market.currentPrice,
+          quantity: sized.quantity,
+        }),
+      ],
+      metrics: [metric('momentum.exit', { reason, direction: 'short' })],
+    };
+  }
+
+  const newLow = madeNewLow ? closedClose.toString() : (state.lowSinceEntry ?? entryPrice);
+  const nextState: MomentumState = {
+    ...state,
+    lowSinceEntry: newLow,
+    entryBlocker: null,
+  };
+  return {
+    nextState,
+    decisions: [{ type: 'noop' }],
+    logs: [
+      log('debug', 'momentum: holding short', { symbol: market.symbol, lowSinceEntry: newLow }),
+    ],
+    metrics: rodeOffCross
+      ? [metric('momentum.hold', { reason: 'ride-mode', direction: 'short' })]
+      : [],
   };
 };

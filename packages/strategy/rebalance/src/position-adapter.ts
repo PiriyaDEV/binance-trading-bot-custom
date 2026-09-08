@@ -38,6 +38,12 @@ export const rebalancePositionAdapter: PositionStateAdapter<RebalanceState> = {
         };
       case 'sell-reduce':
         return { ...(body as unknown as RebalanceState), heldQuantity: fill.heldQuantity };
+      // Rebalance is spot long-only — it never opens a short, so these kinds
+      // cannot occur for this strategy's own orders. No-op rather than thrown
+      // so an unrelated future fill source cannot crash the adapter.
+      case 'sell-open':
+      case 'buy-reduce':
+        return null;
       case 'empty': {
         if (
           body['avgEntryPrice'] === null &&

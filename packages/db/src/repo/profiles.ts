@@ -126,6 +126,7 @@ export async function update(
       | 'enabled'
       | 'config'
       | 'quoteAsset'
+      | 'leverage'
       | 'benchmarkMode'
       | 'baselineBacktestRunId'
       | 'enablementPolicy'

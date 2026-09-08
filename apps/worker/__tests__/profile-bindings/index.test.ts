@@ -17,6 +17,7 @@ const {
   findProfile,
   findApiKey,
   findMode,
+  findMarketType,
   listNotifiers,
   ordersInsert,
   ordersUpsertLive,
@@ -26,6 +27,7 @@ const {
   findProfile: vi.fn(),
   findApiKey: vi.fn(),
   findMode: vi.fn(),
+  findMarketType: vi.fn(),
   listNotifiers: vi.fn().mockResolvedValue([]),
   ordersInsert: vi.fn(),
   ordersUpsertLive: vi.fn(),
@@ -48,7 +50,11 @@ vi.mock('@app/db', async (importOriginal) => {
     repo: {
       ...orig.repo,
       apiKeys: { ...orig.repo.apiKeys, findByAccountId: findApiKey },
-      accounts: { ...orig.repo.accounts, binanceModeById: findMode },
+      accounts: {
+        ...orig.repo.accounts,
+        binanceModeById: findMode,
+        marketTypeById: findMarketType,
+      },
     },
   };
 });
@@ -88,6 +94,11 @@ beforeEach(() => {
   // Environment is per-account; default to a valid mode so mode-agnostic
   // tests exercise the happy path without restating it.
   findMode.mockResolvedValue('test');
+  findMarketType.mockReset();
+  // Every existing account predates `marketType`; default to 'spot' so
+  // tests that don't care about it exercise the same client-construction
+  // path they always have.
+  findMarketType.mockResolvedValue('spot');
   listNotifiers.mockClear();
   ordersInsert.mockReset();
   ordersUpsertLive.mockReset();

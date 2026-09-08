@@ -84,6 +84,7 @@ const buildBindings = (
   const { persistence: persistenceOverrides, ...rest } = overrides;
   return {
     mode: 'live',
+    marketType: 'spot',
     binance: fakeBinance(),
     weightLimit1m: 1200,
     quoteAsset: 'USDT',

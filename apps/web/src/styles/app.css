@@ -1,12 +1,25 @@
 @import 'tailwindcss';
-@import '@fontsource-variable/space-grotesk';
-@import '@fontsource-variable/jetbrains-mono';
+/* IBM Plex Sans Thai bundles Latin + Thai (+ cyrillic-ext) glyphs in every
+   weight file as separate @font-face unicode-range blocks under one family
+   name, so importing these four weights covers both scripts with matched
+   metrics — no separate Thai stack needed. */
+@import '@fontsource/ibm-plex-sans-thai/400.css';
+@import '@fontsource/ibm-plex-sans-thai/500.css';
+@import '@fontsource/ibm-plex-sans-thai/600.css';
+@import '@fontsource/ibm-plex-sans-thai/700.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+@import '@fontsource/ibm-plex-mono/700.css';
 
 /*
- * Theme tokens — "Operator Terminal" v2 (see DESIGN.md). Bauhaus-inspired
- * dark terminal: flat near-black ramp, hairline 1px borders, square corners,
- * one loud accent. Light is a functional fallback. Toggled via [data-theme]
- * on <html> (see useTheme).
+ * Theme tokens — "Operator Terminal" v4 (see DESIGN.md). Same dark-first,
+ * information-dense terminal as v2/v3 — hairline 1px borders, one loud
+ * accent — softened toward a cleaner, more fluid geometry: modest rounded
+ * corners instead of flat squares, and a soft blurred elevation shadow
+ * instead of a hard offset. Density and behaviour are unchanged; only the
+ * corner/shadow language moved. Light is a functional fallback. Toggled via
+ * [data-theme] on <html> (see useTheme).
  *
  * Colour is reserved for meaning: accent (amber yellow, black ink) =
  * selection / active nav / value-commit / focus, primary (signal green,
@@ -107,26 +120,29 @@
   --color-card: var(--card);
   --color-card-fg: var(--card-fg);
 
-  /* Square corners everywhere (Bauhaus): collapse the radius scale to 0 so
-     existing rounded-* utilities go flat without per-file edits. Dots, pills
-     and switch thumbs keep rounded-full. */
-  --radius-xs: 0px;
-  --radius-sm: 0px;
-  --radius-md: 0px;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
-  --radius-2xl: 0px;
-  --radius-3xl: 0px;
+  /* Clean/fluid corners: a modest scale replaces the old flat 0px collapse,
+     small enough that dense surfaces (tables, inputs, badges) stay crisp and
+     large enough that cards and modals read as soft rather than brutalist.
+     Dots, pills and switch thumbs keep rounded-full regardless. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 28px;
 
-  /* Space Grotesk for prose and labels; mono reserved for numbers and code,
-     where column alignment and slashed-zero earn their place. Both are
-     self-hosted via @fontsource-variable (PWA: no CDN dependency). */
+  /* IBM Plex Sans Thai for prose and labels — one family covers English and
+     Thai with matched metrics, so mixed-language strings never mix x-heights.
+     IBM Plex Mono for numbers and code, where column alignment and the
+     slashed zero earn their place. Both self-hosted via @fontsource (PWA: no
+     CDN dependency, and required by this app's font-src 'self' CSP). */
   --font-sans:
-    'Space Grotesk Variable', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+    'IBM Plex Sans Thai', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
     'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
   --font-mono:
-    'JetBrains Mono Variable', ui-monospace, 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Menlo,
-    Monaco, 'Roboto Mono', monospace;
+    'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Monaco, 'Roboto Mono',
+    monospace;
 }
 
 @layer base {
@@ -199,6 +215,27 @@
   }
 }
 
+/* Soft insight-driven gradient wash for the ONE hero number per view (the
+   headline P/L figure) — two low-alpha colour blobs built from the theme's
+   own accent/primary tokens (so it re-tunes automatically per theme) fading
+   into the ordinary panel fill. Deliberately not applied broadly: it marks
+   "the number that matters most on this screen", not a decorative default —
+   every dense grid/table cell stays flat per DESIGN.md. */
+@utility gradient-hero {
+  background:
+    radial-gradient(
+      120% 140% at 100% 0%,
+      color-mix(in srgb, var(--primary) 16%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      120% 140% at 0% 100%,
+      color-mix(in srgb, var(--accent) 10%, transparent) 0%,
+      transparent 60%
+    ),
+    var(--bg-elevated);
+}
+
 /* Tinted semantic fill, used by technicals badges and flash cells:
    the semantic color laid over the panel surface at low alpha. */
 @utility tint-up {
@@ -222,9 +259,15 @@
   color: var(--danger);
 }
 
-/* Bauhaus hard offset shadow — the only shadow in the system (modals). */
+/* Soft elevation shadow — the only shadow in the system (modals). Replaces
+   the old hard offset with a blurred, low-opacity lift so modals read as
+   floating rather than pasted-on, matching the softer corner language above.
+   Kept as one utility (not per-surface tuning) so elevation stays a single
+   deliberate signal, same rule as v2/v3. */
 @utility shadow-offset {
-  box-shadow: 6px 6px 0 #000;
+  box-shadow:
+    0 12px 32px -8px rgb(0 0 0 / 0.45),
+    0 2px 8px -2px rgb(0 0 0 / 0.3);
 }
 
 /* Ticker marquee: the track is two identical halves, so translating it by -50%

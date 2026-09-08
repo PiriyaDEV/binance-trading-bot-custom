@@ -24,7 +24,7 @@ describe('buildStrategyRegistry', () => {
   it('registers the expected strategy set', () => {
     const r = buildStrategyRegistry();
     const names = r.list().map((s) => s.name);
-    expect(names).toEqual(['trailing-trade', 'momentum', 'rebalance']);
+    expect(names).toEqual(['trailing-trade', 'momentum', 'rebalance', 'bridge-scout']);
   });
 
   it('returns a fresh registry on each call', () => {
@@ -39,6 +39,7 @@ describe('buildStrategyRegistry', () => {
     expect(r.get('trailing-trade')?.name).toBe('trailing-trade');
     expect(r.get('momentum')?.name).toBe('momentum');
     expect(r.get('rebalance')?.name).toBe('rebalance');
+    expect(r.get('bridge-scout')?.name).toBe('bridge-scout');
     expect(r.get('unknown')).toBeUndefined();
   });
 

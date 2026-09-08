@@ -66,6 +66,8 @@ export interface DrainedFill {
   readonly side: OrderSide;
   readonly price: Decimal;
   readonly qty: Decimal;
+  /** The order's own `positionSide` (absent means `'LONG'`), carried through so `adoptOne` folds this fill with the right direction — see `resolveFill`. */
+  readonly positionSide?: 'LONG' | 'SHORT';
 }
 
 const BPS = new Decimal(10_000);
@@ -304,7 +306,7 @@ export class BacktestExecutor implements Executor {
       this.rest(intent, params, ctx.clock.nowMs(), symbolInfo);
     } else if (outcome.kind !== 'rejected') {
       for (const fill of outcome.fills)
-        this.applyFill(intent.side, intent.reason, symbolInfo, fill);
+        this.applyFill(intent.side, intent.reason, symbolInfo, fill, intent.positionSide);
     }
     return { ok: true };
   }
@@ -387,7 +389,13 @@ export class BacktestExecutor implements Executor {
       // Rejected: leave the reservation released — the funds return to free.
       if (outcome.kind === 'rejected') continue;
       for (const fill of outcome.fills) {
-        this.applyFill(ord.intent.side, ord.intent.reason, symbolInfo, fill);
+        this.applyFill(
+          ord.intent.side,
+          ord.intent.reason,
+          symbolInfo,
+          fill,
+          ord.intent.positionSide,
+        );
       }
       if (outcome.kind === 'partial') {
         // Re-rest the remainder with a fresh reservation for the reduced qty, and
@@ -418,12 +426,20 @@ export class BacktestExecutor implements Executor {
     reason: BacktestTrade['reason'],
     symbolInfo: SymbolInfo,
     fill: Fill,
+    positionSide?: 'LONG' | 'SHORT',
   ): void {
     const notional = fill.price.mul(fill.qty);
     const fee = notional.mul(fill.feeBps).div(BPS);
     const quote = this.balanceOf(symbolInfo.quoteAsset);
     const base = this.balanceOf(symbolInfo.baseAsset);
 
+    // Wallet-ledger math is direction-agnostic by construction: a SELL that
+    // opens/adds to a short takes `base.free` negative (an owed, borrowed
+    // amount) and banks the sale proceeds in quote, exactly mirroring a BUY;
+    // covering it later (a BUY) spends quote and returns `base.free` toward
+    // zero. No branch on `positionSide` is needed here — only the fill-model
+    // layer (`ohlcv-fill.ts`) needed to stop treating a short-opening SELL as
+    // unfunded for lack of held base.
     if (side === 'BUY') {
       quote.free = quote.free.sub(notional.add(fee));
       base.free = base.free.add(fill.qty);
@@ -441,7 +457,13 @@ export class BacktestExecutor implements Executor {
       feeQuote: fee.toString(),
       tsMs: fill.tsMs,
     });
-    this.pendingFills.push({ symbol: symbolInfo.symbol, side, price: fill.price, qty: fill.qty });
+    this.pendingFills.push({
+      symbol: symbolInfo.symbol,
+      side,
+      price: fill.price,
+      qty: fill.qty,
+      ...(positionSide ? { positionSide } : {}),
+    });
   }
 
   private balanceOf(asset: string): MutableBalance {

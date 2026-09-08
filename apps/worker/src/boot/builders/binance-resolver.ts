@@ -140,6 +140,21 @@ export const buildBinanceResolver = ({
     if (!key) return null;
     const account = await a.account.get();
     if (!account) return null;
+    // This resolver backs spot-only infrastructure (the user-stream open path
+    // and the cold-load REST fallback, per this file's header comment) — a
+    // futures market-data/user-stream pipeline is a later phase (the wider
+    // roadmap's Phase 4b), not yet built. Refuse a futures account here
+    // rather than silently building a SPOT client from what may be Futures
+    // Testnet credentials (a separate key pair per Binance, per
+    // binance-futures-rest.ts's header comment) — that would fail Binance's
+    // signature check in a confusing way instead of this clear, loud refusal.
+    if (account.marketType === 'futures') {
+      logger.warn(
+        { accountId },
+        'binance-resolver: futures account requested spot-only resolution; not yet supported',
+      );
+      return null;
+    }
     const mode = account.binanceMode === 'live' ? 'live' : 'test';
     const orderGovernor = orderGovernorFor(accountId, mode);
     return {

@@ -84,13 +84,18 @@ const MomentumProtectiveStopSchema = z.object({
 });
 
 /**
- * Macro trend filter gating ENTRY. When enabled, a fresh long opens only while
- * price trades above a long-term moving average, so the strategy sits out a
- * confirmed downtrend instead of getting whipsawed by false EMA cross-ups on
- * bear rallies (the momentum engine's main failure mode). Exit logic is
- * untouched: the trailing stop and EMA cross-down still manage an open long.
- * The line is computed on the strategy's own `candleInterval`, so it is sized
- * for a daily-ish interval (period 200 on `1d` is the classic macro trend).
+ * Macro trend filter gating ENTRY, symmetric across sides: when enabled, a
+ * fresh LONG opens only while price trades above a long-term moving average,
+ * and a fresh SHORT (under `direction: 'short'`/`'both'`) opens only while
+ * price trades below it — so the strategy sits out whichever direction is
+ * fighting the confirmed trend, instead of getting whipsawed by false EMA
+ * crosses against it (the ungated failure mode: a strong uptrend keeps firing
+ * short entries the EMA cross alone can't tell from a real top, and the mirror
+ * in a downtrend). Exit logic is untouched: the trailing stop and opposite
+ * EMA cross still manage an open position on either side. The line is
+ * computed on the strategy's own `candleInterval`, so it is sized for a
+ * daily-ish interval (period 200 on `1d` is the classic macro trend). One
+ * config block protects both legs — there is no separate short-side filter.
  * Optional so the live worker, which reads stored config WITHOUT schema-parsing,
  * treats an absent block as disabled via optional chaining.
  */
@@ -99,7 +104,7 @@ const MomentumTrendFilterSchema = z.object({
     .boolean()
     .default(false)
     .describe(
-      'Only enter while price is above the long-term trend line, so the bot sits out confirmed downtrends instead of buying into them. Exits are unaffected.',
+      'Only enter with the trend: a long only while price is above the long-term trend line, a short only while it is below. The bot sits out confirmed moves against it instead of trading into them. Exits are unaffected.',
     ),
   maType: z
     .enum(['sma', 'ema'])
@@ -114,16 +119,19 @@ const MomentumTrendFilterSchema = z.object({
     .describe(
       'Trend-line lookback in candles, on the strategy candle interval. 200 on a daily interval is the classic macro trend; a shorter period reacts faster.',
     ),
-  // Slope veto. Price-above-line alone cannot tell an early bull (price below a
-  // lagging slow line while a new uptrend starts) from a bear rally (price pops
-  // above a fast line that is still falling). Requiring the line itself to rise
-  // lets a faster `period` catch the early bull while the slope rejects rallies
-  // on a still-declining line. Off keeps the simpler price-only gate.
+  // Slope veto, symmetric per side. On the long side, price-above-line alone
+  // cannot tell an early bull (price below a lagging slow line while a new
+  // uptrend starts) from a bear rally (price pops above a fast line that is
+  // still falling); on the short side it's the mirror (a dip below a still-
+  // rising line is a bull pullback, not a real top). Requiring the line itself
+  // to move with the trade lets a faster `period` catch an early move while the
+  // slope rejects the opposite-direction fakeout. Off keeps the simpler
+  // price-vs-line-only gate.
   requireRising: z
     .boolean()
     .default(false)
     .describe(
-      'Also require the trend line itself to be rising, not just price above it. This rejects entries on bear rallies that pop above a line that is still falling. Off keeps the simpler price-above-line gate.',
+      'Also require the trend line itself to confirm the move: rising for a long, falling for a short — not just price on the right side of it. This rejects entries on a fakeout against a line still moving the other way. Off keeps the simpler price-vs-line-only gate.',
     ),
   slopeLookbackBars: z
     .number()
@@ -133,6 +141,114 @@ const MomentumTrendFilterSchema = z.object({
     .default(10)
     .describe(
       'When "require rising" is on, how many candles back to measure the slope. The trend line must sit higher now than this many candles ago. Only used when "require rising" is on.',
+    ),
+});
+
+/**
+ * Market-wide regime filter gating ENTRY — the portfolio-level counterpart to
+ * `trendFilter`. Where `trendFilter` reads a symbol's OWN candles (25
+ * independent per-symbol decisions that in practice correlate around shared
+ * macro turning points — confirmed to make things WORSE, not better, across
+ * every period tested; see docs/research/momentum-regime-robustness.md),
+ * this reads ONE shared reference symbol's trend (BTC — see
+ * `Strategy.capabilities.referenceSymbol`, fixed per plugin, not
+ * per-profile) and applies the SAME bias to every symbol's entries: a long
+ * opens only while the reference is above its own long-term line, a short
+ * only while it is below — one decision for the whole book instead of 25
+ * that happen to correlate. Independently toggleable from `trendFilter`;
+ * both may be enabled together. Exit logic is untouched, same as
+ * `trendFilter`.
+ *
+ * BACKTEST-ONLY as of this writing: the live worker does not yet stream the
+ * reference symbol's candles, so `TickInput.reference` is never populated on
+ * a live tick even for a profile with this enabled. The gate FAILS CLOSED in
+ * that case (`insufficient-history`-equivalent) — every entry is suppressed,
+ * not silently ignored — so enabling this on a live profile today visibly
+ * stops it trading rather than trading on missing data. Do not enable on a
+ * live profile until the live plumbing lands.
+ */
+const MomentumRegimeFilterSchema = z.object({
+  enabled: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Only enter with the wider market: a long only while the reference market (BTC) is above its own long-term trend line, a short only while it is below. Backtest-only for now — enabling this on a LIVE profile stops it trading entirely, since the live feed for this is not wired up yet.',
+    ),
+  maType: z
+    .enum(['sma', 'ema'])
+    .default('sma')
+    .describe('Moving-average type for the reference market’s long-term trend line.'),
+  period: z
+    .number()
+    .int()
+    .min(2)
+    .max(400)
+    .default(30)
+    .describe(
+      'Trend-line lookback in candles, on the strategy candle interval, applied to the reference market. Default 30 — a fine-tune sweep (30/40/50/60/70/100/200) on this basket found the best-balanced result there; the landscape is bumpy, not a smooth curve, and every period beyond ~60 falls off sharply (see docs/research/momentum-regime-robustness.md).',
+    ),
+  requireRising: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Also require the reference trend line itself to confirm the move: rising for a long, falling for a short — not just the reference price on the right side of it.',
+    ),
+  slopeLookbackBars: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(10)
+    .describe(
+      'When "require rising" is on, how many candles back to measure the reference line’s slope.',
+    ),
+});
+
+/**
+ * Ride mode: while `regimeFilter` confirms direction AND the reference
+ * market's own trend is STRONG (ADX above `adxThreshold`, not just "on the
+ * right side of the line"), a matching open position ignores the ordinary
+ * EMA-cross exit and trails at the wider `retracePct` instead of
+ * `trailingStopPct` — closer to buy-and-hold for exactly the stretch where
+ * the fast EMA cross tends to whipsaw a profitable position out early. The
+ * moment the regime or its strength breaks, normal exit behaviour resumes
+ * on the very next tick; nothing here is sticky/stateful.
+ *
+ * Depends on `regimeFilter` being enabled: without it, `regimeGate` trivially
+ * passes for both sides, which would let ADX — a strength-only, direction
+ * -blind reading — drive riding on its own. Backtest-only for now, for the
+ * same reason as `regimeFilter` (no live reference feed yet): fails closed
+ * on a live tick, so enabling this on a live profile has no effect until
+ * that plumbing lands, exactly like `regimeFilter` itself.
+ */
+const MomentumRideModeSchema = z.object({
+  enabled: z
+    .boolean()
+    .default(false)
+    .describe(
+      'While the reference market (BTC) confirms a strong, persistent trend (regimeFilter direction + ADX above threshold), hold a matching position through the ordinary EMA-cross exit at a wider trailing stop instead of flattening on it. Requires regimeFilter to also be enabled. Backtest-only for now — no effect on a LIVE profile yet.',
+    ),
+  adxPeriod: z
+    .number()
+    .int()
+    .min(2)
+    .max(100)
+    .default(14)
+    .describe(
+      'ADX lookback in candles, on the strategy candle interval, applied to the reference market. 14 is the Wilder-standard default.',
+    ),
+  adxThreshold: z
+    .number()
+    .min(10)
+    .max(100)
+    .default(40)
+    .describe(
+      'Minimum ADX reading on the reference market to count as "strongly trending". Wilder\'s convention: above 25 is trending, above 40 is strong, above 50 is very strong.',
+    ),
+  retracePct: decimalString('rideMode.retracePct must be in (0, 1)', { gt: 0, lt: 1 })
+    .default('0.20')
+    .describe(
+      '@ui:percent-of How far price may fall from its peak before the trailing-stop sells WHILE RIDING. Must be wider than trailingStopPct or ride mode has no effect. Must be above 0 and below 100.',
     ),
 });
 
@@ -367,6 +483,31 @@ export const MomentumConfigSchema = z.object({
     .enum(MOMENTUM_CANDLE_INTERVALS)
     .default(MOMENTUM_DEFAULT_INTERVAL)
     .describe('Candle interval the strategy reads for its EMA cross.'),
+  // Which side(s) of the market this profile trades. 'long' (default) enters
+  // on a fast/slow EMA cross-up and exits on a cross-down or a trailing-stop
+  // retrace from the high since entry — the strategy's original, long-only
+  // behaviour, unchanged. 'short' mirrors every part of that: enters on a
+  // cross-DOWN, exits on a cross-up or a trailing-stop bounce from the low
+  // since entry. 'both' stays in the market continuously, flipping sides on
+  // every cross instead of sitting flat between them: flat + cross-up opens
+  // long, flat + cross-down opens short, and each position closes on the
+  // opposite cross or its own trailing stop — the same entry/exit mechanics
+  // as the single-direction modes, just without a flat gap waiting for "the"
+  // direction this profile trades. A short leg (under 'short' or 'both')
+  // DOES apply `trendFilter` (symmetric per side — see that schema's doc
+  // comment) and `regimeFilter` (also symmetric, market-wide rather than
+  // per-symbol — see its own doc comment) but does NOT apply
+  // `entryExtension`, `atrTrailingStop`, `profitTrail`, or `protectiveStop`
+  // — those remaining gates/enhancements were built and tested for the long
+  // side only; mirroring them is deliberately out of scope for this pass
+  // (inert on a short leg, not misapplied — a 'both' profile's LONG leg
+  // still gets all of them).
+  direction: z
+    .enum(['long', 'short', 'both'])
+    .default('long')
+    .describe(
+      "'long' (default) buys a cross-up and sells a cross-down/trailing-stop. 'short' sells a cross-down to open and buys back (covers) on a cross-up/trailing-stop bounce. 'both' does both, flipping directly from one side to the other on every cross instead of going flat between them. A short leg (under 'short' or 'both') uses the fast/slow EMA cross, the plain trailing-stop percentage, and — if configured — the macro trend filter and the market-wide regime filter (both mirrored: a short only opens below the line). The extension guard, ATR trail, profit trail, and protective stop still apply only to the long leg for now.",
+    ),
   entrySizing: MomentumEntrySizingSchema,
   // Reserve cap is account-wide, so it is profile-level only (excluded from the
   // per-symbol override below): a per-symbol cap on an account-wide total is
@@ -401,6 +542,15 @@ export const MomentumConfigSchema = z.object({
   // Macro trend filter gating entries (exit logic untouched). Off by default so
   // existing configs and golden replays stay byte-identical.
   trendFilter: MomentumTrendFilterSchema.optional(),
+  // Market-wide (BTC-anchored) regime gate, independent of trendFilter — see
+  // its own doc comment for why this is a SEPARATE mechanism, not a
+  // duplicate. Off by default; backtest-only today (fails closed on live —
+  // see the schema's own warning).
+  regimeFilter: MomentumRegimeFilterSchema.optional(),
+  // Hold longer through a confirmed strong trend — layered on top of
+  // regimeFilter, not a replacement for it. Off by default; backtest-only
+  // today for the same reason regimeFilter is (see its own doc comment).
+  rideMode: MomentumRideModeSchema.optional(),
   // Entry overextension guard: a CEILING on how far above its baseline price may
   // sit at entry (the trend filter is the floor). Seeded on by the create-profile
   // default; an absent block reads as off in the unparsed worker config, so
@@ -469,6 +619,13 @@ export const MomentumStateSchema = z.object({
   // a live intra-candle wick — so a transient spike cannot tighten the stop.
   // Seeded to the entry price on entry; cleared on exit.
   highSinceEntry: z.string().nullable(),
+  // Low-water mark of the closed-candle CLOSE since entry, the short-side
+  // mirror of `highSinceEntry` — only meaningful while `config.direction ===
+  // 'short'` (unused, and left null, on a long position). The short's
+  // trailing stop measures the bounce from this low. Additive with
+  // `.default(null)` so the state schema version can stay put, same as
+  // `lastEntryCandleMs`.
+  lowSinceEntry: z.string().nullable().default(null),
   // High-water mark of the profit trail: the best close among the bucket-end 1m
   // candles seen since entry, floored at the entry price. Separate from
   // `highSinceEntry` because the two ratchet on different clocks — this one
@@ -513,6 +670,10 @@ export const MomentumStateSchema = z.object({
         'insufficient-history',
         'below-trend',
         'falling-trend',
+        'above-trend',
+        'rising-trend',
+        'against-regime',
+        'regime-insufficient-history',
         'overextended',
         'extension-insufficient-history',
         'sizing-unconfigured',
@@ -567,6 +728,7 @@ export const initialMomentumState = (): MomentumState => ({
   schemaVersion: MOMENTUM_STATE_SCHEMA_VERSION,
   entryPrice: null,
   highSinceEntry: null,
+  lowSinceEntry: null,
   profitHigh: null,
   heldQuantity: null,
   lastEntryCandleMs: null,

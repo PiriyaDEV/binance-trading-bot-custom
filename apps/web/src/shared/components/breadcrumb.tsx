@@ -11,6 +11,7 @@ import { useProfileName } from '@/features/profile/lib/use-profile-name';
 import { PROFILE_SECTION_LABELS } from '@/features/profile/lib/profile-sections';
 import type { RouteTitle } from '@/app/use-document-title';
 import { cn } from '@/shared/lib/cn';
+import { t } from '@/shared/lib/i18n';
 
 /** Route ids whose crumb is a data lookup rather than a static title. */
 const PROFILE_ROUTE_ID = '/accounts/$accountId/profiles/$profileId';
@@ -56,10 +57,11 @@ export function buildCrumbs(
     // nav row the operator clicked ("Risk"), not the page's own longer heading
     // ("Risk controls").
     // PROFILE_ROUTE_ID is excluded deliberately: the Overview nav row shares its path with the profile LAYOUT rung, whose label is the profile's own name. Letting the section map answer here would name that rung after one of its own children, so a cold load would read "Home > Overview > Risk".
-    const sectionLabel =
+    const sectionLabelKey =
       m.fullPath === undefined || m.fullPath === PROFILE_ROUTE_ID
         ? undefined
         : PROFILE_SECTION_LABELS.get(m.fullPath);
+    const sectionLabel = sectionLabelKey === undefined ? undefined : t(sectionLabelKey);
     // `crumb` first: a document title is written to stand alone in a browser
     // tab and often repeats an ancestor, which reads as a stutter in a trail.
     const title = m.staticData?.crumb ?? m.staticData?.title;
@@ -95,7 +97,7 @@ export function useCrumbs(): readonly Crumb[] {
   // The account is the operator's top scope and is always the trail's root, but
   // its own name adds nothing an operator navigates by — the account switcher
   // in the header already states it. "Home" names the place it links to.
-  overrides[ACCOUNT_ROUTE_ID] = 'Home';
+  overrides[ACCOUNT_ROUTE_ID] = t('nav.home');
   return buildCrumbs(
     matches.map((m) => ({
       routeId: String(m.routeId),
@@ -120,7 +122,11 @@ export function Breadcrumb({ className }: { className?: string }): React.JSX.Ele
   const crumbs = useCrumbs();
   if (crumbs.length === 0) return null;
   return (
-    <nav aria-label="Breadcrumb" data-testid="breadcrumb" className={cn('min-w-0', className)}>
+    <nav
+      aria-label={t('breadcrumb.label')}
+      data-testid="breadcrumb"
+      className={cn('min-w-0', className)}
+    >
       <ol className="flex flex-wrap items-center gap-x-0.5 text-sm text-muted-fg">
         {crumbs.map((c, i) => (
           <li key={c.to} className="flex min-w-0 items-center">

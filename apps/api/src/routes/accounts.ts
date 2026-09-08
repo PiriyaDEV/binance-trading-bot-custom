@@ -26,6 +26,7 @@ const toResponse = (
   id: row.id,
   name: row.name,
   binanceMode: row.binanceMode as 'test' | 'live',
+  marketType: row.marketType as 'spot' | 'futures',
   apiKeyConfigured,
   createdAt: row.createdAt.toISOString(),
 });
@@ -120,11 +121,19 @@ export const accountsRouter = (di: DI): ApiHono => {
   app.openapi(createRouteDef, async (c) => {
     const operatorId = userIdOf(c);
     const body = c.req.valid('json');
+    // Futures trading is testnet-only in this app, same standing rule as
+    // everything else — enforced here (a code gate, not a DB CHECK) so it is
+    // easy to find and a one-line change if ever explicitly lifted, rather
+    // than silently bypassable from a direct DB write.
+    if (body.marketType === 'futures' && body.binanceMode === 'live') {
+      throw new HttpError('VALIDATION_FAILED', 'Futures accounts must use the test environment.');
+    }
     let row: schema.AccountRow;
     try {
       row = await repo.accounts.create(di.db, operatorId, {
         name: body.name,
         binanceMode: body.binanceMode,
+        marketType: body.marketType,
       });
     } catch (err) {
       // The only expected failure is the (owner_id, name) unique index — surface

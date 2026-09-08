@@ -62,6 +62,13 @@ export const trailingTradePositionAdapter: PositionStateAdapter<TTState> = {
         // Partial exit: lower held qty only; avgEntryPrice / highSinceBuy /
         // grid index stay intact for the remaining slug.
         return { ...(body as unknown as TTState), heldQuantity: fill.heldQuantity };
+      // trailing-trade does not yet open shorts (its grid/pyramid/regime
+      // machinery is long-only) — these kinds cannot occur for this
+      // strategy's own orders today. No-op rather than thrown so an
+      // unrelated future fill source cannot crash the adapter.
+      case 'sell-open':
+      case 'buy-reduce':
+        return null;
       case 'empty': {
         // Full exit: flatten. Skip the write when already flat so a
         // duplicate clear does not churn the row.

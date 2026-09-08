@@ -103,34 +103,40 @@ export function resolveFill(
   fill: RawFill,
   stepSize?: Decimal,
   minNotional?: Decimal,
+  positionSide?: 'LONG' | 'SHORT',
 ): AdoptedFill;
 /**
- * Fold one raw fill onto a prior position view, producing the {@link AdoptedFill} the caller hands to `PositionStateAdapter.applyFill`. BUY accumulates a weighted-average entry price and held quantity; SELL reduces the held quantity, flattening to `empty` once it reaches zero. `prior` is null for a fresh position. This is the single source for the fold; the live executor and the backtest engine both call it so their position math cannot drift.
+ * Fold one raw fill onto a prior position view, producing the {@link AdoptedFill} the caller hands to `PositionStateAdapter.applyFill`. Which side OPENS/ADDS vs REDUCES depends on `positionSide` (defaulting to `'LONG'`, so every existing long-only caller is byte-identical): for a long, BUY accumulates and SELL reduces; for a short, SELL accumulates and BUY reduces. Either way the position flattens to `empty` once its quantity reaches zero. `prior` is null for a fresh position. This is the single source for the fold; the live executor and the backtest engine both call it so their position math cannot drift.
  *
- * `stepSize` flattens a SELL whose residual is below it: a remainder smaller than the smallest tradeable increment can never be sold, so the position IS flat. This clears the phantom-position left when a base-asset trading fee makes a full exit's sold quantity fall a fee's-worth short of the tracked (gross) held quantity, otherwise `avgEntryPrice` lingers and blocks re-entry.
+ * `stepSize` flattens a reducing fill whose residual is below it: a remainder smaller than the smallest tradeable increment can never be closed, so the position IS flat. This clears the phantom-position left when a base-asset trading fee makes a full exit's filled quantity fall a fee's-worth short of the tracked (gross) held quantity, otherwise `avgEntryPrice` lingers and blocks re-entry.
  *
- * `minNotional` flattens the other unsellable residual, and it is the one LOT_SIZE misses. LOT_SIZE is the smallest tradeable INCREMENT; NOTIONAL is the smallest tradeable VALUE, and a residual can clear the first while failing the second by orders of magnitude. The live filters that motivated it are ENAUSDT's: a 0.01 step against a USD 5 floor, where 0.01184 ENA is 1.18 steps and worth USD 0.0013 — sellable by LOT_SIZE, refused by NOTIONAL forever. Those coins reached the wallet as untracked dust rather than as this fold's residual, so the bound protects against a residual of the same shape rather than against a case it has been observed to hit. See {@link isUnsellableDust} for why the value bound alone is not enough.
+ * `minNotional` flattens the other unclosable residual, and it is the one LOT_SIZE misses. LOT_SIZE is the smallest tradeable INCREMENT; NOTIONAL is the smallest tradeable VALUE, and a residual can clear the first while failing the second by orders of magnitude. The live filters that motivated it are ENAUSDT's: a 0.01 step against a USD 5 floor, where 0.01184 ENA is 1.18 steps and worth USD 0.0013 — sellable by LOT_SIZE, refused by NOTIONAL forever. Those coins reached the wallet as untracked dust rather than as this fold's residual, so the bound protects against a residual of the same shape rather than against a case it has been observed to hit. See {@link isUnsellableDust} for why the value bound alone is not enough.
  *
  * Both bounds are optional, and omitting them (backtest, existing fixtures) restores the historical `lte(0)`-only behaviour, so golden replay is byte-identical.
  *
- * The flattened crumb's cost basis is intentionally NOT booked as realised P/L: `realizedPnlOnSell` matches only the sold quantity, so a residual below one step or below the order-value floor is written off silently rather than recorded as a sub-cent loss.
+ * The flattened crumb's cost basis is intentionally NOT booked as realised P/L: `realizedPnlOnSell`/`realizedPnlOnCover` match only the closed quantity, so a residual below one step or below the order-value floor is written off silently rather than recorded as a sub-cent loss.
  *
  * @param prior - Position before this fill, or null for a fresh position.
- * @param fill - The fill to fold; on SELL, `price` is also what values the leftover against `minNotional`.
+ * @param fill - The fill to fold; on a reducing fill, `price` is also what values the leftover against `minNotional`.
  * @param stepSize - The symbol's LOT_SIZE increment (live path only); omitted to keep replay-identical behaviour.
  * @param minNotional - The symbol's NOTIONAL order-value floor (live path only); omitted to keep replay-identical behaviour.
- * @returns The `buy`, `sell-reduce`, or `empty` adoption to apply to position state.
+ * @param positionSide - `'LONG'` (default) or `'SHORT'`; decides which fill side opens vs reduces.
+ * @returns The `buy`/`sell-open`, `sell-reduce`/`buy-reduce`, or `empty` adoption to apply to position state.
  */
 export function resolveFill(
   prior: PositionView | null,
   fill: RawFill,
   stepSize?: Decimal,
   minNotional?: Decimal,
+  positionSide: 'LONG' | 'SHORT' = 'LONG',
 ): AdoptedFill {
   const prevQty = prior?.heldQuantity ? new Decimal(prior.heldQuantity) : new Decimal(0);
   const prevLbp = prior?.avgEntryPrice ? new Decimal(prior.avgEntryPrice) : null;
+  // The side that OPENS/ADDS for this position's direction: BUY for a long,
+  // SELL for a short. Every other side reduces.
+  const openingSide = positionSide === 'LONG' ? 'BUY' : 'SELL';
 
-  if (fill.side === 'BUY') {
+  if (fill.side === openingSide) {
     const nextQty = prevQty.plus(fill.quantity);
     // prevQty=0 collapses the weighted average to the fill price, so the
     // explicit guard and the general formula agree on a fresh/zeroed position.
@@ -138,11 +144,13 @@ export function resolveFill(
       prevLbp && prevQty.gt(0)
         ? prevLbp.times(prevQty).plus(fill.price.times(fill.quantity)).div(nextQty)
         : fill.price;
-    return { kind: 'buy', avgEntryPrice: nextLbp.toString(), heldQuantity: nextQty.toString() };
+    return positionSide === 'LONG'
+      ? { kind: 'buy', avgEntryPrice: nextLbp.toString(), heldQuantity: nextQty.toString() }
+      : { kind: 'sell-open', avgEntryPrice: nextLbp.toString(), heldQuantity: nextQty.toString() };
   }
 
   const remaining = prevQty.minus(fill.quantity);
-  // A residual the exchange would refuse to sell means the position IS flat — flatten it rather than stranding it. The wallet reconciler asks the same two questions of a wallet balance, so a crumb this fold writes off is not one the next reconcile pass adopts straight back.
+  // A residual the exchange would refuse to close means the position IS flat — flatten it rather than stranding it. The wallet reconciler asks the same two questions of a wallet balance, so a crumb this fold writes off is not one the next reconcile pass adopts straight back.
   const flat = isUnsellableDust(
     remaining,
     prevQty,
@@ -150,7 +158,10 @@ export function resolveFill(
     stepSize ?? null,
     minNotional ?? null,
   );
-  return flat ? { kind: 'empty' } : { kind: 'sell-reduce', heldQuantity: remaining.toString() };
+  if (flat) return { kind: 'empty' };
+  return positionSide === 'LONG'
+    ? { kind: 'sell-reduce', heldQuantity: remaining.toString() }
+    : { kind: 'buy-reduce', heldQuantity: remaining.toString() };
 }
 
 /** Cost-basis-matched realised P/L for one SELL fill (decimal-strings). */

@@ -49,7 +49,7 @@ import {
   type ValueBoundDisarmReason,
 } from 'boot/reconcile-held-quantity.js';
 import { isPhantomLedgerRow } from 'boot/revive-avg-entry-price.js';
-import { buildBinanceClient } from 'profile-bindings/binance-client.js';
+import { buildBinanceClient, buildFuturesBinanceClient } from 'profile-bindings/binance-client.js';
 import type { ProfileManager } from 'profile-manager/profile-manager.js';
 import { resolveTechnicalsIntervals } from 'profile-manager/technicals-intervals.js';
 import type { QueueSet } from 'queues/queue-set.js';
@@ -290,6 +290,50 @@ const handleSubscribe = async (
     strategyName: profile.strategyName,
   });
   const symbolRows = await p.profileSymbols.listForProfile();
+
+  // Futures leverage is per-symbol on Binance (not account-wide), so it's set
+  // once here, at subscribe/(re)enable time, over every symbol this profile
+  // is about to trade — the same natural "profile start" hook a symbol
+  // onboarding action already uses. Fail-open: a `setLeverage` hiccup must
+  // not block the profile from starting (mirrors `reconcileOwnership`'s
+  // best-effort catch below), so a failure here is a warn-level log, not a
+  // thrown error. No-ops entirely for a spot profile or a futures profile
+  // with no `leverage` set.
+  if (profile.leverage != null) {
+    const marketType = await repo.accounts.marketTypeById(deps.db, ids.accountId);
+    if (marketType === 'futures') {
+      const [apiKey, modeRaw] = await Promise.all([
+        repo.apiKeys.findByAccountId(deps.db, ids.accountId),
+        repo.accounts.binanceModeById(deps.db, ids.accountId),
+      ]);
+      // Not hardcoded to 'test': futures is testnet-only by an existing
+      // account-creation business rule (apps/api/src/routes/accounts.ts), but
+      // reading the account's real mode here rather than assuming it keeps
+      // this correct if that rule ever changes, instead of silently
+      // building a live-mode client.
+      const mode: BinanceMode = modeRaw === 'live' ? 'live' : 'test';
+      if (apiKey) {
+        const futuresClient = buildFuturesBinanceClient({
+          mode,
+          apiKey: apiKey.key,
+          secretKey: apiKey.secret,
+        });
+        await Promise.all(
+          symbolRows.map((r) =>
+            futuresClient
+              .setLeverage(r.symbol, profile.leverage as number)
+              .catch((err: unknown) => {
+                deps.logger.warn(
+                  { ...ids, symbol: r.symbol, leverage: profile.leverage, err },
+                  'pipeline_subscribe_set_leverage_failed',
+                );
+              }),
+          ),
+        );
+      }
+    }
+  }
+
   await deps.profileManager.enable({
     userId: ids.userId,
     operatorId: ids.userId,
@@ -944,7 +988,15 @@ const handleVerifyKey = async (
     return;
   }
   const mode = account.binanceMode === 'live' ? 'live' : 'test';
-  const client = buildBinanceClient({ mode, apiKey: key.key, secretKey: key.secret });
+  // Both the spot and futures clients expose `getAccount()` — the lightest
+  // authenticated call either API offers — and the result here is only ever
+  // used as a success/failure signal (never a property read), so branching
+  // client construction on `marketType` is safe without widening this
+  // function's surface any further.
+  const client =
+    account.marketType === 'futures'
+      ? buildFuturesBinanceClient({ mode, apiKey: key.key, secretKey: key.secret })
+      : buildBinanceClient({ mode, apiKey: key.key, secretKey: key.secret });
   try {
     await client.getAccount();
   } catch (err) {

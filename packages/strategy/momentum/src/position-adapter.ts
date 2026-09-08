@@ -69,6 +69,23 @@ export const momentumPositionAdapter: PositionStateAdapter<MomentumState> = {
       case 'sell-reduce':
         // Partial exit: lower held qty only; entry / high-water stay intact.
         return { ...(body as unknown as MomentumState), heldQuantity: fill.heldQuantity };
+      case 'sell-open':
+        // Short entry/add: mirrors `buy` — set entry price + held qty and
+        // reset both high-water marks so a fresh trailing cycle starts.
+        // `lowSinceEntry` (the short's trailing mark) resets alongside
+        // `highSinceEntry`, which a short-mode position never uses.
+        return {
+          ...(body as unknown as MomentumState),
+          entryPrice: fill.avgEntryPrice,
+          heldQuantity: fill.heldQuantity,
+          highSinceEntry: null,
+          lowSinceEntry: null,
+          profitHigh: null,
+          profitTrailSinceMs: null,
+        };
+      case 'buy-reduce':
+        // Short partial exit (a cover): lower held qty only.
+        return { ...(body as unknown as MomentumState), heldQuantity: fill.heldQuantity };
       case 'empty': {
         // Full exit: flatten. Skip the write when already flat so a duplicate clear does not churn the row — but only when the position-scoped fields are clear too. Testing the position fields alone waves through a body that is flat and STILL carrying a stop refusal, which is exactly the stranded shape this clear exists to reach.
         if (
@@ -85,6 +102,7 @@ export const momentumPositionAdapter: PositionStateAdapter<MomentumState> = {
           entryPrice: null,
           heldQuantity: null,
           highSinceEntry: null,
+          lowSinceEntry: null,
           profitHigh: null,
           profitTrailSinceMs: null,
         });
@@ -114,6 +132,7 @@ export const momentumPositionAdapter: PositionStateAdapter<MomentumState> = {
       ...(body as unknown as MomentumState),
       entryPrice: null,
       highSinceEntry: null,
+      lowSinceEntry: null,
       profitHigh: null,
       profitTrailSinceMs: null,
     };

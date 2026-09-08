@@ -1,5 +1,14 @@
 export type BinanceMode = 'live' | 'test';
 
+/**
+ * Which Binance product this client trades. Spot and Futures are separate
+ * hosts, separate credentials (a Futures Testnet key pair is not a Spot
+ * Testnet key pair), and separate REST/WS surfaces — a client is built for
+ * exactly one, same as `BinanceMode`. See `packages/binance/src/binance-rest.ts`
+ * (spot) and `binance-futures-rest.ts` (futures).
+ */
+export type BinanceMarketType = 'spot' | 'futures';
+
 export interface BinanceEndpointSet {
   readonly rest: Readonly<Record<BinanceMode, string>>;
   readonly marketStream: Readonly<Record<BinanceMode, string>>;
@@ -20,6 +29,33 @@ const DEFAULT_ENDPOINTS: BinanceEndpointSet = {
     test: 'wss://ws-api.testnet.binance.vision/ws-api/v3',
   },
 };
+
+/**
+ * USDT-M Futures hosts. A wholly separate site from Spot (`fapi.binance.com`
+ * / `testnet.binancefuture.com`), not a path prefix on the Spot host — Futures
+ * Testnet issues its own credentials, distinct from Spot Testnet's.
+ */
+const DEFAULT_FUTURES_ENDPOINTS: BinanceEndpointSet = {
+  rest: {
+    live: 'https://fapi.binance.com',
+    test: 'https://testnet.binancefuture.com',
+  },
+  marketStream: {
+    live: 'wss://fstream.binance.com',
+    test: 'wss://stream.binancefuture.com',
+  },
+  userStream: {
+    live: 'wss://fstream.binance.com',
+    test: 'wss://stream.binancefuture.com',
+  },
+};
+
+export const BINANCE_FUTURES_HOSTS: Readonly<Record<BinanceMode, string>> =
+  DEFAULT_FUTURES_ENDPOINTS.rest;
+export const BINANCE_FUTURES_WS_HOSTS: Readonly<Record<BinanceMode, string>> =
+  DEFAULT_FUTURES_ENDPOINTS.marketStream;
+export const BINANCE_FUTURES_USER_WS_HOSTS: Readonly<Record<BinanceMode, string>> =
+  DEFAULT_FUTURES_ENDPOINTS.userStream;
 
 const OVERRIDE_KEYS = ['BINANCE_REST_URL', 'BINANCE_MARKET_WS_URL', 'BINANCE_USER_WS_URL'] as const;
 

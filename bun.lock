@@ -6,6 +6,7 @@
       "name": "binance-trading-bot",
       "dependencies": {
         "@app/api": "workspace:*",
+        "@app/binance": "workspace:*",
         "@app/contracts": "workspace:*",
         "@app/core": "workspace:*",
         "@app/db": "workspace:*",
@@ -85,8 +86,8 @@
         "@app/strategy-rebalance": "workspace:*",
         "@app/strategy-trailing-trade": "workspace:*",
         "@cfworker/json-schema": "~4.1.1",
-        "@fontsource-variable/jetbrains-mono": "^5.3.0",
-        "@fontsource-variable/space-grotesk": "^5.3.0",
+        "@fontsource/ibm-plex-mono": "^5.3.0",
+        "@fontsource/ibm-plex-sans-thai": "^5.3.0",
         "@hookform/resolvers": "~5.9.1",
         "@radix-ui/react-dialog": "~1.1.23",
         "@radix-ui/react-dropdown-menu": "~2.1.24",
@@ -303,6 +304,16 @@
         "zod": "~4.4.3",
       },
     },
+    "packages/strategy/bridge-scout": {
+      "name": "@app/strategy-bridge-scout",
+      "version": "1.0.0",
+      "dependencies": {
+        "@app/contracts": "workspace:*",
+        "@app/money": "workspace:*",
+        "@app/strategy-core": "workspace:*",
+        "zod": "~4.4.3",
+      },
+    },
     "packages/strategy/core": {
       "name": "@app/strategy-core",
       "version": "1.0.0",
@@ -337,6 +348,7 @@
       "name": "@app/strategy-registry",
       "version": "1.0.0",
       "dependencies": {
+        "@app/strategy-bridge-scout": "workspace:*",
         "@app/strategy-core": "workspace:*",
         "@app/strategy-momentum": "workspace:*",
         "@app/strategy-rebalance": "workspace:*",
@@ -404,6 +416,8 @@
     "@app/server": ["@app/server@workspace:apps/server"],
 
     "@app/strategy-backtest": ["@app/strategy-backtest@workspace:packages/strategy/backtest"],
+
+    "@app/strategy-bridge-scout": ["@app/strategy-bridge-scout@workspace:packages/strategy/bridge-scout"],
 
     "@app/strategy-core": ["@app/strategy-core@workspace:packages/strategy/core"],
 
@@ -735,9 +749,9 @@
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.12", "", {}, "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww=="],
 
-    "@fontsource-variable/jetbrains-mono": ["@fontsource-variable/jetbrains-mono@5.3.0", "", {}, "sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw=="],
+    "@fontsource/ibm-plex-mono": ["@fontsource/ibm-plex-mono@5.3.0", "", {}, "sha512-eTgnZjZEGk1QtD3ZstF+Vclo2HLAni8YMy34/DxllwZvyz1lR/1RF/xTiAquOBO7MvqBx8D2Ig2WCPMVfdZu7Q=="],
 
-    "@fontsource-variable/space-grotesk": ["@fontsource-variable/space-grotesk@5.3.0", "", {}, "sha512-2IxmvfB08i9vnGB3Ym/AXvhRE+8XOjWMXIyDum03c+tPwH0FUoMNQfGpU8NXPxjbws0Vvss3AH0Zqt4oJBBAdw=="],
+    "@fontsource/ibm-plex-sans-thai": ["@fontsource/ibm-plex-sans-thai@5.3.0", "", {}, "sha512-olXzgcA/CTk0PibqGMJrheml3/z8N9VzNLcHkzv9tCoBqnaMoxYYwZp4PZrDkPuOCUe1gW942e9f5fGOOlr3zg=="],
 
     "@grpc/grpc-js": ["@grpc/grpc-js@1.14.4", "", { "dependencies": { "@grpc/proto-loader": "^0.8.0", "@js-sdsl/ordered-map": "^4.4.2" } }, "sha512-k9Dj3DV/itK9D06Y8f190Qgop7/Ui+D0njFV3LHMPwPT75DpXLQohE9Wmz0QElrJnzsjB7KPWiKJbOl7IPDArQ=="],
 

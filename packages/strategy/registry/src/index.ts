@@ -2,6 +2,7 @@ import { createRegistry, type StrategyRegistry } from '@app/strategy-core';
 import { trailingTrade } from '@app/strategy-trailing-trade';
 import { momentum } from '@app/strategy-momentum';
 import { rebalance } from '@app/strategy-rebalance';
+import { bridgeScout } from '@app/strategy-bridge-scout';
 
 /**
  * Single source of truth for the registered strategy plugin set. apps/api and
@@ -13,6 +14,7 @@ export const buildStrategyRegistry = (): StrategyRegistry => {
   registry.register(trailingTrade);
   registry.register(momentum);
   registry.register(rebalance);
+  registry.register(bridgeScout);
   return registry;
 };
 

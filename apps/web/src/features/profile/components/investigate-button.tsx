@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { InvestigateSheet } from '@/features/profile/components/investigate-sheet';
 import { useDiagnosisRunStatus } from '@/features/profile/lib/use-diagnosis-run-status';
 import { Button } from '@/shared/components/ui/button';
+import { t } from '@/shared/lib/i18n';
 
 export function InvestigateButton({
   profileId,
@@ -37,7 +38,7 @@ export function InvestigateButton({
         ) : (
           <Stethoscope className="h-4 w-4" aria-hidden />
         )}
-        {isLive ? 'Investigating' : 'Investigate'}
+        {t(isLive ? 'investigate.button.running' : 'investigate.button.idle')}
       </Button>
       <InvestigateSheet profileId={profileId} open={open} onOpenChange={setOpen} />
     </>

@@ -22,6 +22,7 @@ import * as manualOrders from './manual-orders.js';
 import * as opsNotifyConfig from './ops-notify-config.js';
 import * as orders from './orders.js';
 import * as overrideActions from './override-actions.js';
+import * as presetBacktestPreviews from './preset-backtest-previews.js';
 import * as profileKv from './profile-kv.js';
 import * as profileNotifiers from './profile-notifiers.js';
 import * as profileStateHistory from './profile-state-history.js';
@@ -53,6 +54,7 @@ export {
   opsNotifyConfig,
   orders,
   overrideActions,
+  presetBacktestPreviews,
   profileKv,
   profileNotifiers,
   profileStateHistory,

@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@app/strategy-bridge-scout": "workspace:*",
     "@app/strategy-core": "workspace:*",
     "@app/strategy-momentum": "workspace:*",
     "@app/strategy-rebalance": "workspace:*",

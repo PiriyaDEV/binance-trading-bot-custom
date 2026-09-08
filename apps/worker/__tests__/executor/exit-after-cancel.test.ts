@@ -102,6 +102,7 @@ const buildBindings = (
 ): ProfileExecutorBindings =>
   ({
     mode: 'live',
+    marketType: 'spot',
     binance,
     weightLimit1m: 1200,
     quoteAsset: 'USDT',

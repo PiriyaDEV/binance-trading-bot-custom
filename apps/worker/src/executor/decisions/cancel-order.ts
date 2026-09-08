@@ -88,6 +88,22 @@ export const cancelOrderHandler = async (
   const profileId = asProfileId(ctx.profileId);
   const bindings = await resolveBindings(deps, userId, profileId);
 
+  // Futures order execution is not wired yet (see live-executor.ts's
+  // `ProfileExecutorBindings.marketType` doc comment) — refuse loudly here
+  // rather than let TS's widened `binance` union force a cast that would
+  // silently call spot-shaped methods (`ctx()`, `cancelOrder`'s response
+  // shape) against a futures client. `phase: 'pre-call'` / `retryable: false`
+  // matches this file's existing convention for a refusal made before ever
+  // reaching Binance.
+  if (bindings.marketType !== 'spot') {
+    return {
+      ok: false,
+      retryable: false,
+      phase: 'pre-call',
+      reason: `futures order cancellation not yet supported (profile ${profileId})`,
+    };
+  }
+
   // The local row gives the symbol, the live SLOT (symbol, intent) this cancel
   // would free, and what the order is holding. Read once, lazily: the happy path
   // with a symbol on the decision needs no local row at all, and only a FAILED

@@ -37,8 +37,21 @@ import { parseAccountPermissions } from 'lib/account-permissions.js';
 import { removeOpenOrder, upsertOpenOrder } from 'executor/open-orders-cache.js';
 import { readCurrentWeight, recordWeight } from 'executor/weight-limiter.js';
 import { parseAccountSnapshot } from 'tick/snapshot-loader.js';
+import type { ProfileExecutorBindings } from 'executor/live-executor.js';
 import { emergencyNotify } from './emergency-notify.js';
 import { enqueueReconcile, resolveBindings, type DecisionDeps } from './_types.js';
+
+/**
+ * The spot-narrowed slice of {@link ProfileExecutorBindings} — the type this
+ * module's helpers actually operate on, now that the field is a real
+ * discriminated union. `placeOrderHandler` checks `marketType` once at the
+ * top and refuses a non-spot binding before calling anything below; every
+ * helper it calls (including `resolveAmbiguousPlacement`) takes this
+ * narrowed type as its parameter instead of the full union, so the
+ * already-done check is enforced by the compiler at each call site too, not
+ * just re-trusted.
+ */
+type SpotBindings = Extract<ProfileExecutorBindings, { marketType: 'spot' }>;
 
 // Drizzle puts the PG driver error (e.g. the not-null violation) on `err.cause`,
 // not the top-level message. Surface it so the action_log records the root cause.
@@ -206,7 +219,7 @@ type Probe =
  */
 const resolveAmbiguousPlacement = async (
   deps: DecisionDeps,
-  bindings: Awaited<ReturnType<typeof resolveBindings>>,
+  bindings: SpotBindings,
   ctx: ExecutorContext,
   decision: Extract<Decision, { type: 'place-order' }>,
   calledAtMs: number,
@@ -384,6 +397,20 @@ export const placeOrderHandler = async (
   const userId = asUserId(ctx.userId);
   const profileId = asProfileId(ctx.profileId);
   const bindings = await resolveBindings(deps, userId, profileId);
+
+  // Futures order execution is not wired yet (see live-executor.ts's
+  // `ProfileExecutorBindings` doc comment) — refuse loudly here rather than
+  // let a futures binding reach spot-shaped order-placement logic below.
+  // `phase: 'pre-call'` / `retryable: false` matches this file's existing
+  // convention for a refusal made before ever reaching Binance.
+  if (bindings.marketType !== 'spot') {
+    return {
+      ok: false,
+      retryable: false,
+      phase: 'pre-call',
+      reason: `futures order placement not yet supported (profile ${profileId})`,
+    };
+  }
 
   // Two independent single-key Redis GETs sitting directly ahead of the signed
   // order. Issued together so the placement's latency budget pays one round-trip

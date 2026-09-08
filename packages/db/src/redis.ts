@@ -268,6 +268,13 @@ export const GLOBAL_KEYS = {
   // held asset. Global market data (no profile). Written without a TTL so the
   // dashboard always has prices; each cycle overwrites it.
   usdPriceMap: (): string => `market-trend:usd-price-map`,
+  // Cached USD→THB rate for the Thai-locale P/L readout on the Home hero
+  // card. Fetched on demand (cache-miss) by the api's `/fx/usdthb` route from
+  // a free public rate API and written WITH a TTL (see `FX_RATE_TTL_S`) so a
+  // stale rate expires and refetches on its own rather than drifting forever
+  // — unlike `marketTrend`, which a cron keeps fresh, nothing else touches
+  // this key.
+  fxUsdThb: (): string => `fx:usd-thb`,
 } as const satisfies Record<string, (...args: never[]) => string>;
 
 export type GlobalScopedKeyName = keyof typeof GLOBAL_KEYS;
@@ -285,6 +292,14 @@ export const ORPHAN_SNAPSHOT_TTL_S = 3_600;
  * TTL of {@link GLOBAL_KEYS.discoveryAssetPolicyAbort}. 25 hours, deliberately longer than the 86,400,000 ms (24 h) maximum a profile's `refreshPeriodMs` may be set to: the record is cleared by the next cycle that completes, so a TTL shorter than the longest legal gap between cycles would let the finding disappear on its own while the fault is still in force — the exact silence this record exists to end. The upper bound is what makes the expiry safe, not a guess at how long an operator takes to look.
  */
 export const DISCOVERY_ASSET_POLICY_ABORT_TTL_S = 90_000;
+
+/**
+ * TTL of {@link GLOBAL_KEYS.fxUsdThb}. 6 hours: a fiat exchange rate moves
+ * little enough intraday that a THB estimate stamped a few hours ago is
+ * still an honest "about"; long enough that the api is not hammering the
+ * upstream rate provider on every Home page load.
+ */
+export const FX_RATE_TTL_S = 21_600;
 
 // =============================================================================
 // Typed wrapper

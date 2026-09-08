@@ -99,6 +99,15 @@ export const momentum: Strategy<MomentumConfig, MomentumState, MomentumBundle> =
     candleIntervals: MOMENTUM_CANDLE_INTERVALS,
     needsUserDataStream: true,
     needsMiniTicker: true,
+    // Market-wide regime anchor for `regimeFilter` (see schema.ts) — BTC's
+    // own trend, read on every tick regardless of which symbol is being
+    // evaluated. Declared unconditionally (not gated on whether any profile
+    // has `regimeFilter.enabled`): capabilities are static per plugin, not
+    // derived from a specific profile's config. Backtest-only for now — the
+    // live worker does not yet stream this (see `regimeFilter`'s doc
+    // comment), so `TickInput.reference` is simply absent on the live path
+    // and the gate fails closed there, same as too little history.
+    referenceSymbol: 'BTCUSDT',
     // Reads the operator-override slot so a force-sell can reach the tick.
     bundleProviders: ['override'],
     // Force-sell only: an operator can flatten a held position (`trigger-sell`),

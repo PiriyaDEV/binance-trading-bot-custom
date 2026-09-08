@@ -23,6 +23,13 @@ export const accounts = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     binanceMode: text('binance_mode').notNull(),
+    // Which Binance product this account's key pair trades: 'spot' (default,
+    // every pre-existing account) or 'futures'. A new axis sibling to
+    // `binanceMode`, not a column on it — a Futures Testnet key pair is
+    // separate from Spot Testnet's, so (like test vs live) the operator
+    // creates a SEPARATE account for futures rather than this account
+    // somehow holding two key pairs. `api_keys.account_id` stays unique.
+    marketType: text('market_type').notNull().default('spot'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -31,6 +38,7 @@ export const accounts = pgTable(
     // index is needed (Postgres does not auto-index the FK column).
     uniqueIndex('accounts_owner_name_uniq').on(table.ownerId, table.name),
     check('accounts_binance_mode_chk', sql`${table.binanceMode} in ('test','live')`),
+    check('accounts_market_type_chk', sql`${table.marketType} in ('spot','futures')`),
   ],
 );
 
