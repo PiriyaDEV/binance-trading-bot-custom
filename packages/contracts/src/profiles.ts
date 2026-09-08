@@ -44,6 +44,18 @@ export const QuoteAsset = z.string().min(2).max(16);
 export type QuoteAsset = z.infer<typeof QuoteAsset>;
 
 /**
+ * Fixed leverage for a futures-mode profile, 1-3 — the app's low-leverage
+ * policy, matching the DB's own CHECK constraint
+ * (`packages/db/src/schema/profiles.ts`) and the futures REST client's own
+ * clamp (`packages/binance/src/binance-futures-rest.ts`). Meaningless for a
+ * spot profile; left null there rather than defaulted to 1, so the API/UI
+ * can tell "no leverage set" apart from "explicitly 1x."
+ */
+export const ProfileLeverage = z.number().int().min(1).max(3);
+/** TS type derived from {@link ProfileLeverage} so consumers don't re-run z.infer at every call site. */
+export type ProfileLeverage = z.infer<typeof ProfileLeverage>;
+
+/**
  * Equity-benchmark mode for the dashboard's "vs holding" line. `btc` holds BTC;
  * `basket` holds an equal-weight basket of the profile's own traded symbols —
  * the honest "did I beat the coins I picked, not just BTC" comparator.
@@ -117,6 +129,8 @@ export const ProfileCreate = z.object({
   strategyName: z.string().min(1),
   strategyVersion: z.string().min(1),
   config: z.unknown(),
+  /** Fixed leverage (1-3) for a futures-mode profile. Optional — meaningless, and ignored, for a spot profile. */
+  leverage: ProfileLeverage.optional(),
 });
 /** TS type derived from {@link ProfileCreate} so consumers don't re-run z.infer at every call site. */
 export type ProfileCreate = z.infer<typeof ProfileCreate>;
@@ -128,6 +142,12 @@ export const ProfilePatch = z.object({
   config: z.unknown().optional(),
   /** Trading quote currency. Optional so the operator can change just the quote. */
   quoteAsset: QuoteAsset.optional(),
+  /**
+   * Fixed leverage (1-3) for a futures-mode profile. `null` clears it back to
+   * unset; absent leaves it unchanged. Meaningless, and ignored, for a spot
+   * profile.
+   */
+  leverage: ProfileLeverage.nullable().optional(),
   /** Equity-benchmark mode. Optional so the operator can flip just the comparator. */
   benchmarkMode: BenchmarkMode.optional(),
   /**
@@ -170,6 +190,8 @@ export const ProfileResponse = z.object({
   // profile's parent account (a key pair, hence one environment, is account-level).
   binanceMode: BinanceMode,
   quoteAsset: QuoteAsset,
+  /** Fixed leverage (1-3) for a futures-mode profile, or null when unset (including every spot profile). */
+  leverage: ProfileLeverage.nullable().default(null),
   // Defaulted so a response (or test fixture) predating this field still parses;
   // the API always supplies it from the row's NOT NULL default-'btc' column.
   benchmarkMode: BenchmarkMode.default('btc'),

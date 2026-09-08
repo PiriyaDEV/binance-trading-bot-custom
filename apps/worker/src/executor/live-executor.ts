@@ -18,7 +18,12 @@ import type {
 import type { NotifyProviderRegistry } from '@app/notify';
 import { asProfileId, asUserId, type AccountId, type ProfileId, type UserId } from '@app/contracts';
 import type { ProfileScope } from '@app/db';
-import { type BinanceMode, type BinanceRestClient, type OrderRateGovernor } from '@app/binance';
+import {
+  type BinanceFuturesRestClient,
+  type BinanceMode,
+  type BinanceRestClient,
+  type OrderRateGovernor,
+} from '@app/binance';
 
 import { createCancelLedger } from 'executor/cancel-ledger.js';
 import { createPlacementDedup, type PlacementDedup } from 'executor/placement-dedup.js';
@@ -41,12 +46,12 @@ import type { ProfileResolved } from 'profile-bindings/resolved-config.js';
 
 /**
  * `quoteAsset` + `weightLimit1m` are the {@link ProfileResolved} config scalars
- * the tick already resolved; `mode` / `binance` / `persistence` are the
- * fresh-read parts a bindings build always reconstructs.
+ * the tick already resolved; `mode` / `persistence` / `orderGovernor` are the
+ * fresh-read parts a bindings build always reconstructs, regardless of market
+ * type.
  */
-export interface ProfileExecutorBindings extends ProfileResolved {
+interface ProfileExecutorBindingsCommon extends ProfileResolved {
   readonly mode: BinanceMode;
-  readonly binance: BinanceRestClient;
   readonly persistence: ProfilePersistence;
   /**
    * The account's ORDERS budget, the same one `binance` charges. Read here only
@@ -55,6 +60,24 @@ export interface ProfileExecutorBindings extends ProfileResolved {
    */
   readonly orderGovernor?: OrderRateGovernor;
 }
+
+/**
+ * A genuine discriminated union, not two independent fields — `BinanceRestClient`
+ * (spot) and `BinanceFuturesRestClient` (futures) are non-overlapping
+ * interfaces (e.g. only spot exposes `ctx()`), not a common supertype, so a
+ * consumer MUST narrow on `marketType` before calling a market-specific
+ * method. Because this is a real union (not `marketType: 'spot'|'futures'` +
+ * `binance: A|B` as two separate fields), `if (bindings.marketType === 'spot')`
+ * narrows `bindings.binance` to `BinanceRestClient` for TypeScript, not just
+ * for a human reader — no cast needed at any call site. Order-placement/cancel
+ * decisions currently reject a non-spot binding outright (Phase 4c wires real
+ * futures order routing).
+ */
+export type ProfileExecutorBindings = ProfileExecutorBindingsCommon &
+  (
+    | { readonly marketType: 'spot'; readonly binance: BinanceRestClient }
+    | { readonly marketType: 'futures'; readonly binance: BinanceFuturesRestClient }
+  );
 
 export interface LiveExecutorDeps {
   readonly redis: Redis;

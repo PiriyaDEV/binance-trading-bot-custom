@@ -42,6 +42,24 @@ export async function binanceModeById(
 }
 
 /**
+ * Account-id-scoped read of just the market type, the same shape and
+ * justification as {@link binanceModeById} (used alongside it wherever a
+ * caller needs to pick a spot vs futures Binance client without a full
+ * account row read).
+ */
+export async function marketTypeById(
+  db: Database,
+  accountId: AccountId,
+): Promise<'spot' | 'futures' | null> {
+  const [row] = await db
+    .select({ marketType: accounts.marketType })
+    .from(accounts)
+    .where(eq(accounts.id, accountId))
+    .limit(1);
+  return (row?.marketType as 'spot' | 'futures') ?? null;
+}
+
+/**
  * True if any account (across every operator) is on the live Binance
  * environment. Deployment-wide, not operator-scoped: it backs the `LIVE_DEMO`
  * boot guard, which must refuse to start a demo box that holds a live key pair.

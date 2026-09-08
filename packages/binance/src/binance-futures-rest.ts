@@ -111,6 +111,29 @@ export interface FuturesOpenOrderDto extends FuturesPlaceOrderDto {
   readonly stopPrice: string;
 }
 
+/**
+ * One realised trade from `GET /fapi/v1/userTrades` — the futures sibling of
+ * spot's `MyTradeDto`. Carries `positionSide` (which side the fill acted on)
+ * and `realizedPnl` (non-zero only on a reducing fill), neither of which the
+ * spot DTO has any equivalent for.
+ */
+export interface FuturesMyTradeDto {
+  readonly id: number;
+  readonly orderId: number;
+  readonly symbol: string;
+  readonly side: FuturesOrderSide;
+  readonly positionSide: FuturesPositionSide | 'BOTH';
+  readonly price: string;
+  readonly qty: string;
+  readonly quoteQty: string;
+  readonly realizedPnl: string;
+  readonly commission: string;
+  readonly commissionAsset: string;
+  readonly time: number;
+  readonly buyer: boolean;
+  readonly maker: boolean;
+}
+
 export interface FuturesExchangeSymbolDto {
   readonly symbol: string;
   readonly status: string;
@@ -146,6 +169,18 @@ export interface BinanceFuturesRestClient {
   cancelOrder(params: { symbol: string; orderId: number }): Promise<FuturesCancelOrderDto>;
   getOrder(params: { symbol: string; orderId: number }): Promise<FuturesOpenOrderDto>;
   getOpenOrders(symbol?: string): Promise<readonly FuturesOpenOrderDto[]>;
+  /**
+   * Lists the account's own trades for a symbol, oldest first. Signed
+   * endpoint. Mirrors spot's `getMyTrades` (`binance-rest.ts`) — a future
+   * fill-backfiller can poll this the same way the spot one does, anchoring
+   * on `fromId` past the last-adopted trade. Not yet called anywhere; landed
+   * as scaffolding ahead of that work.
+   */
+  getMyTrades(params: {
+    symbol: string;
+    fromId?: number;
+    limit?: number;
+  }): Promise<readonly FuturesMyTradeDto[]>;
 }
 
 export interface CreateBinanceFuturesRestOptions {
@@ -341,6 +376,14 @@ export const createBinanceFuturesRest = (
         'GET',
         '/fapi/v1/openOrders',
         symbol ? { symbol } : {},
+        true,
+      );
+    },
+    async getMyTrades(params) {
+      return call<readonly FuturesMyTradeDto[]>(
+        'GET',
+        '/fapi/v1/userTrades',
+        { symbol: params.symbol, fromId: params.fromId, limit: params.limit },
         true,
       );
     },

@@ -20,7 +20,7 @@ import {
 
 import type { ProfileExecutorBindings } from 'executor/live-executor.js';
 
-import { buildBinanceClient } from './binance-client.js';
+import { buildBinanceClient, buildFuturesBinanceClient } from './binance-client.js';
 import { buildPersistence } from './persistence.js';
 import type { ProfileResolved } from './resolved-config.js';
 
@@ -112,10 +112,11 @@ const bindingsFromRepo = async (
   // round-trips come straight off the order's latency budget. Every branch below
   // still refuses on a missing row; parallelising only means a read that would
   // have been short-circuited is issued anyway.
-  const [profile, apiKey, modeRaw] = await Promise.all([
+  const [profile, apiKey, modeRaw, marketTypeRaw] = await Promise.all([
     p.profile.findById(),
     repo.apiKeys.findByAccountId(deps.db, accountId),
     repo.accounts.binanceModeById(deps.db, accountId),
+    repo.accounts.marketTypeById(deps.db, accountId),
   ]);
   if (!profile || !apiKey || !modeRaw) return null;
 
@@ -126,13 +127,36 @@ const bindingsFromRepo = async (
   };
 
   const mode = asBinanceMode(modeRaw);
+  // Absent reads as spot: every account predating this column defaults to
+  // 'spot' at the DB layer, so a null here (row genuinely missing, caught by
+  // the `!profile` guard above in practice) still fails safe to the client
+  // type every existing account already expects.
+  const marketType: 'spot' | 'futures' = marketTypeRaw ?? 'spot';
   const orderGovernor = deps.orderGovernorFor?.(accountId, mode);
-  const binance = buildBinanceClient({
-    mode,
-    apiKey: apiKey.key,
-    secretKey: apiKey.secret,
-    ...(orderGovernor ? { orderGovernor } : {}),
-  });
+  // Built as one tagged object, not `marketType`/`binance` as two separate
+  // `const`s, so the literal `marketType` and its matching client type stay
+  // correlated for TS across the ternary — assigning them independently
+  // loses that link (each widens back to the union on its own) and fails to
+  // satisfy `ProfileExecutorBindings`'s discriminated union below.
+  const binanceBinding =
+    marketType === 'futures'
+      ? {
+          marketType: 'futures' as const,
+          binance: buildFuturesBinanceClient({
+            mode,
+            apiKey: apiKey.key,
+            secretKey: apiKey.secret,
+          }),
+        }
+      : {
+          marketType: 'spot' as const,
+          binance: buildBinanceClient({
+            mode,
+            apiKey: apiKey.key,
+            secretKey: apiKey.secret,
+            ...(orderGovernor ? { orderGovernor } : {}),
+          }),
+        };
 
   // Order reconciliation by Binance id is account-domain. `toAccountScope` widens
   // the proof `scopeProfile` already made — no second ownership query.
@@ -143,7 +167,7 @@ const bindingsFromRepo = async (
 
   return {
     mode,
-    binance,
+    ...binanceBinding,
     ...(orderGovernor ? { orderGovernor } : {}),
     weightLimit1m: config.weightLimit1m,
     quoteAsset: config.quoteAsset,
